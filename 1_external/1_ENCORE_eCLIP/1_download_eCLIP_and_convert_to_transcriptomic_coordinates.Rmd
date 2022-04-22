@@ -1,0 +1,160 @@
+---
+title: "Extracting ENCODE/ENCORE eCLIP binding sites"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we download the ENCODE/ENCORE eCLIP data for RNA-binding proteins and
+  convert the coordinates from genomic to transcriptomic
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+```{r}
+library(ENCODExplorer)
+library(AnnotationHub)
+library(ensembldb)
+library(pbmcapply)
+library(rtracklayer)
+```
+
+```{r}
+encode_df <- get_encode_df()
+```
+Download bed files. One for each eCLIP experiment. Note that we are only downloading the bed for the combined replicates vs mock, e.g significant peaks.
+```{r}
+download_dir <- './ENCODE_download'
+dir.create(download_dir)
+
+query_results <- queryEncode(organism = "Homo sapiens",
+                             assay='eCLIP',
+                             biosample_name = c('K562', 'HepG2'),
+                             file_format='bed',
+                             fixed = TRUE) %>% 
+  dplyr::filter(assembly=='GRCh38', biological_replicates=='1; 2') %>%
+  dplyr::filter(grepl('RNA binding protein', investigated_as))# 
+```
+
+```{r}
+
+downloadEncode(query_results, dir=download_dir)
+```
+
+Get Ensembl annotations
+```{r}
+
+hub = AnnotationHub()
+# output from below line is AH83216. 102 not available
+query(hub, c("EnsDb", "sapiens", "101"))
+ensdb <- hub[['AH83216']]
+## Change the seqlevels style form Ensembl (default) to UCSC:
+seqlevelsStyle(ensdb) <- "UCSC"
+
+```
+
+
+Read in the bed files
+```{r}
+# from https://charlesjb.github.io/How_to_import_narrowPeak/
+extraCols_narrowPeak <- c(signalValue = "numeric", pValue = "numeric",
+                          qValue = "numeric", peak = "integer")
+
+infiles <- Sys.glob(file.path(download_dir, '*bed.gz'))
+
+bed_ranges <- infiles %>% lapply(function(x){
+  import(x, format = "BED", extraCols = extraCols_narrowPeak)
+})
+
+names(bed_ranges) <- paste(query_results[match(gsub('.bed.gz', '', basename(infiles)), query_results$file_accession),]$target,
+                           query_results[match(gsub('.bed.gz', '', basename(infiles)), query_results$file_accession),]$biosample_name, sep='_')
+
+
+```
+
+
+
+Extract exons from Ensembl annotations
+```{r}
+contigs <- lapply(bed_ranges, function(x) as.character(seqlevels(x))) %>% unlist() %>% unique()
+gene_start <- bed_ranges %>% lapply(function(x) min(start(x))) %>% unlist() %>% min()
+gene_end <- bed_ranges %>% lapply(function(x) max(end(x))) %>% unlist() %>% max()
+
+exns <- exonsBy(ensdb, by = "tx", filter = AnnotationFilterList(SeqNameFilter(contigs), 
+    GeneStartFilter(gene_end, condition = "<="), 
+    GeneEndFilter(gene_start, condition = ">=")))
+```
+
+Convert from genomic to transcriptomic coordinates using exons and `mapToTranscripts`
+```{r, time_it = TRUE}
+start <- Sys.time()
+print(start)
+
+bed_ranges_transcriptome <- bed_ranges %>% pbmclapply(function(genome){
+  genome <- genome[seqnames(genome) %in% seqlevels(ensdb)]
+  
+  seqlevels(genome) <- as.character(unique(seqnames(genome)))
+  
+  mapToTranscripts(genome, exns)
+}, mc.cores=5)
+
+end <- Sys.time()
+print(end)
+print(end-start)
+
+saveRDS(bed_ranges_transcriptome, './out/bed_ranges_transcriptome.rds')
+```
+
+Convert to data.frame
+```{r}
+bed_ranges_transcriptome_df <- bed_ranges_transcriptome %>% names() %>% lapply(function(x){
+  bed_ranges_transcriptome[[x]] %>%
+    data.frame() %>%
+    dplyr::mutate(desc=x)
+  }) %>% dplyr::bind_rows()
+
+
+saveRDS(bed_ranges_transcriptome_df, './out/bed_ranges_transcriptome_df.rds')
+
+bed_ranges_transcriptome_df %>%
+  dplyr::select(xHits, desc) %>%
+  unique() %>% dplyr::group_by(desc) %>% dplyr::tally() %>% dplyr::arrange(desc(n))
+```
+
+Pivot to wide format and make binding binary (1=bound, 0=not bound)
+```{r}
+eCLIP_wide <- NULL
+eCLIP_wide$transcript <- bed_ranges_transcriptome_df %>% dplyr::select(seqnames, desc) %>% unique() %>% mutate(hit=1) %>%
+  pivot_wider(names_from=desc, values_from=hit) %>%
+  tibble::column_to_rownames('seqnames')
+
+eCLIP_wide$transcript[is.na(eCLIP_wide$transcript)] <- 0
+
+```
+
+Get tx -> gene map and convert to binary eCLIP binding at gene-level as well.
+```{r}
+library(biomaRt)
+ensembl <- useEnsembl(biomart="ensembl", version=102, dataset="hsapiens_gene_ensembl")
+
+tx2gene <- getBM(attributes=c('ensembl_gene_id', 'ensembl_transcript_id'), mart = ensembl)
+```
+
+```{r}
+
+eCLIP_wide$gene <- eCLIP_wide$transcript %>%
+  merge(tx2gene, by.x='row.names', by.y='ensembl_transcript_id') %>%
+  dplyr::select(-Row.names) %>%
+  group_by(ensembl_gene_id) %>%
+  summarise_all(.funs=function(x) as.numeric(any(x==1))) %>%
+  tibble::remove_rownames() %>%
+  tibble::column_to_rownames('ensembl_gene_id')
+```
+
+Save for use in analysis notebooks
+```{r}
+saveRDS(eCLIP_wide, './out/eCLIP_wide.rds')
+```
+

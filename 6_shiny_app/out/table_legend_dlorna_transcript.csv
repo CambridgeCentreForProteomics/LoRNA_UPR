@@ -1,0 +1,16 @@
+ensembl_gene_id,Ensembl gene ID
+gene_name,Ensembl gene name
+gene_biotype,Ensembl gene biotype
+transcript_biotype,Ensembl transcript name
+transcript_length,Ensembl transcript length
+markers,Localisation marker. ‘unknown’ = not a marker
+Nucleus,Proportion in nucleus. ‘NA’ = Not defined
+Nucleolus,Proportion in nucleolus. ‘NA’ = Not defined
+Cytosol,Proportion in cytosol. ‘NA’ = Not defined
+Membrane,Proportion in membrane. ‘NA’ = Not defined
+Granule,Proportion in granule. ‘NA’ = Not defined
+sd_Nucleus,Standard deviation for proportion in nucleus. ‘NA’ = Not defined
+sd_Nucleolus,Standard deviation for proportion in nucleolus. ‘NA’ = Not defined
+sd_Cytosol,Standard deviation for proportion in cytosol. ‘NA’ = Not defined
+sd_Membrane,Standard deviation for proportion in membrane. ‘NA’ = Not defined
+sd_Granule,Standard deviation for proportion in granule. ‘NA’ = Not defined

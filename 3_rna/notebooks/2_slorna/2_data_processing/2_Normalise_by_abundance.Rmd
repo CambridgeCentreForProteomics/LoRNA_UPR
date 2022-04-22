@@ -1,0 +1,128 @@
+---
+title: "Normalising the RNA abundances"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we normalise the RNA abundances to take account of the amount of RNA in
+  each fraction. We will use two methods for this. 1) Bioanlyzer quantification.
+  2) SIRV spike ins. 
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontfamily: mathpazo
+fontsize: 11pt
+---
+
+RNA-Seq provides relative quantification since we prepare libraries from a subset
+of the input material and then sequence a subset of the reads. Our expression units
+are transcripts per million (TPM) so they take account of the number of reads
+per library. As such, it's valid to compare TPM values between fractions and
+we could just use these relative quantifications for our analysis. However, if
+we want to estimate the proportional localisation of each RNA, we need to adjust
+the quantification to take account of how much RNA there was in each fraction. 
+For a mathematic proof and simulation to demonstrate this, see our review:
+
+Crook & Smith (2020). Moving Profiling Spatial Proteomics Beyond Discrete
+Classification. https://doi.org/10.1002/pmic.201900392
+
+```{r}
+library(MSnbase)
+library(biobroom)
+library(tidyverse)
+
+select <- dplyr::select
+```
+
+
+Read in relative quantification data
+```{r}
+gene_quant_fractions <- readRDS("./out/gene_quant_lorna_res.rds")
+
+```
+
+Read in RNA-Seq library preparation information
+```{r}
+
+# 400ng for the library preparation
+# 0.04 ng SIRV per library prep
+
+rna_per_fraction <- readxl::read_excel('../../../../experimental_design/sLoRNA_RNA_details.xlsx') %>%
+  separate(`Sample name`, into=c('replicate', 'fraction_n')) %>%
+  filter(!is.na(fraction_n)) %>%
+  mutate(replicate=gsub('R', '', replicate)) %>%
+  mutate(fraction=
+           case_when(
+    fraction_n == 'S1' ~ "100g",
+    fraction_n == 'S2' ~ "500g",
+    fraction_n == 'S3' ~ "2000g",
+    fraction_n == 'S4' ~ "5000g",
+    fraction_n == 'S5' ~ "SN",
+    fraction_n == 'S6' ~ "10000g",
+    fraction_n == 'S7' ~ "SN-2",
+    TRUE ~ fraction_n
+  )) %>%
+  select(rna_ug=`Amount (ug)`, replicate, fraction) %>%
+  mutate(proportion_intial_fraction=0.4/rna_ug)
+
+
+print(rna_per_fraction)
+```
+
+
+Function to apply correction factors for total amount of RNA.
+```{r}
+correct_for_abundance <- function(obj, correction_factors){
+  
+  if(!identical(sort(colnames(obj)), sort(rownames(correction_factors)))){
+    print(sort(colnames(obj)))
+    print(sort(rownames(correction_factors)))
+    stop('obj colnames and correction_factors rownames must be identical (post sort)')
+  }
+    
+  correction_factors <- correction_factors[colnames(obj),]
+
+  print(correction_factors)
+  out <- obj
+  exprs(out) <- t(t(exprs(out))*correction_factors$correction_factor)
+  
+  return(out)
+  
+}
+
+```
+
+Different volumes of the fraction were taken for each sample. We need to correct for this too.
+```{r}
+
+volume_correction <- data.frame('fraction'=c('Total', paste0(c(100, 500, 2000, 5000), 'g'), 'SN', '10000g', 'SN-2'),
+                                vol_correction=c(1, 1,1,1,1,10,.9, 9))
+
+sirv_correction <- readRDS('../1_pipeline_qc_and_plotting/results/sirv_correction.rds')  %>%
+  rowwise() %>%
+  mutate(sample_name=paste(LoRNA, replicate, fraction_n, sep='.')) %>%
+  merge(volume_correction, by='fraction') %>%
+  mutate(correction_factor=sirv_correction*vol_correction) %>%
+  tibble::column_to_rownames('sample_name')
+  
+
+print(sirv_correction)
+
+```
+Apply correction factors
+```{r}
+
+gene_quant_fractions_sirv_corrected <- correct_for_abundance(
+  gene_quant_fractions, sirv_correction)
+
+
+
+```
+
+
+```{r}
+saveRDS(gene_quant_fractions_sirv_corrected, "./out/gene_quant_fractions_sirv_corrected.rds")
+```
+

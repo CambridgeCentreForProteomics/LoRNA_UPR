@@ -1,0 +1,62 @@
+---
+title: "Make supplementary tables for quantifications"
+output: html_notebook
+---
+
+
+```{r}
+library(tidyverse)
+library(MSnbase)
+library(writexl)
+```
+
+```{r}
+all_datasets <- readRDS('../3_rna/notebooks/1_dlorna/2_lorna/1_data_processing/out/all_datasets.rds')
+all_datasets_s <- readRDS('../3_rna/notebooks/2_slorna/2_data_processing/out/all_datasets.rds')
+
+```
+
+```{r}
+
+
+quant_data <- all_datasets %>% names() %>% lapply(function(level){
+  all_datasets[[level]] %>% names() %>% lapply(function(condition){
+    q <- exprs(all_datasets[[level]][[condition]]$corrected) %>% data.frame()
+    
+    if(level=='transcript'){
+      q <- q %>% tibble::rownames_to_column('ensembl_transcript_id')
+    } else{
+      q <- q %>% tibble::rownames_to_column('ensembl_gene_id')
+    }
+    
+    return(q)
+  })
+})
+
+```
+
+```{r}
+quant_data_s <- exprs(all_datasets_s$gene$corrected) %>% data.frame() %>% tibble::rownames_to_column('ensembl_gene_id')
+
+```
+
+
+```{r}
+feature_data_to_write <- list('gene_control'=quant_data[[1]][[1]],
+                              'gene_upr'=quant_data[[1]][[2]],
+                              'transcript_control'=quant_data[[2]][[1]],
+                              'transcript_upr'=quant_data[[2]][[2]],
+                              's_gene_control'=quant_data_s)
+
+write_xlsx(
+  feature_data_to_write,
+  path = "./LoRNA_normalised_quantifications.xlsx",
+  col_names = TRUE,
+  format_headers = TRUE,
+  use_zip64 = FALSE
+)
+
+```
+
+
+

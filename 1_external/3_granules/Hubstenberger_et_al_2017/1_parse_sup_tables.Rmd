@@ -1,0 +1,37 @@
+---
+title: "Hubstenberger et al 2017"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we parse the supplementary table from Hubstenberger et al 2017
+  where they performed FAPS on P-bodies
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+```{r}
+library(tidyverse)
+```
+
+Read in the P-body RNAs and sanitise the column names
+
+```{r}
+hub_p_body_rna <- readxl::read_excel('./Hubstenberger_p_body_s2.xlsx', sheet=1)
+
+hub_p_body_rna <- hub_p_body_rna %>%
+  mutate('enr'=as.numeric(as.character(`RNA enrichment in P-body (log2) (Fold change=sorted P-bodies/pre-sorted fraction)`)),
+         'fdr'=as.numeric(as.character(`adjusted p-value (FDR) of RNA enrichment`)),
+         'p_body_ave_cpm'=as.numeric(as.character(`sorted P-body replicate average (count per million reads (CPM))`)),
+         'ctrl_body_ave_cpm'=as.numeric(as.character(`pre-sorted fraction replicate average (count per million reads (CPM))`))) %>%
+  select('ensembl_gene_id'=`Ensembl Gene ID`, enr, fdr, p_body_ave_cpm, ctrl_body_ave_cpm)
+
+
+saveRDS(hub_p_body_rna, './hub_p_body_rna.rds')
+```
+
+
+

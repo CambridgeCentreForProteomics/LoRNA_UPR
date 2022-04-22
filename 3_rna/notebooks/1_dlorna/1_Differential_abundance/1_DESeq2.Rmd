@@ -1,0 +1,224 @@
+---
+title: "Differential abundance - DESeq2"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we perform DE analysis using DESeq2
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+
+Here, we perform differential RNA abundance testing using DESeq2. For this, we will need to take the unfiltered quantification output from the pipeline
+```{r}
+library(tximport)
+library(DESeq2)
+library(tidyverse)
+library(camprotR)
+library(ggrepel)
+```
+
+*Note: The input files are not part of the repo since they are too large. The paths indicated here are personal to my filesystem! This notebook cannot be run from the files in the repo alone. Unless absolutely neccessary, work downstream of this notebook and use the .rds objects in the results directory as input for all notebooks.*
+```{r}
+basedir <- "~/hpc_lorna_tg2"
+
+quant_infiles <- Sys.glob(file.path(basedir, 'projects/LORNA_TG/quant/salmon.dir/dTotal*/quant.sf'))
+transcript_to_gene <- read.delim(file.path(basedir, "projects/LORNA_TG/quant/geneset.dir/transcript2geneMap.tsv"))
+
+```
+
+Read in the quantification estimates
+```{r}
+txi <- tximport(quant_infiles, type = "salmon", tx2gene = transcript_to_gene)
+```
+Update the sample names
+```{r}
+sample_ids <- lapply(quant_infiles, FUN=function(x) gsub('_quant', '', basename(dirname(x))))
+  
+colnames(txi$abundance) <- sample_ids
+colnames(txi$counts) <- sample_ids
+```
+
+
+Generate the sample meta information from the name
+```{r}
+sampleTable <- data.frame(sample=unlist(sample_ids)) %>%
+  separate(sample, into=c('type', 'condition', 'replicate'), remove=FALSE) %>%
+  tibble::column_to_rownames('sample') %>%
+  mutate(condition=factor(condition, levels=c('DMSO', 'Tg')))
+    
+dds <- DESeqDataSetFromTximport(txi, sampleTable, ~condition)
+dds <- DESeq(dds)
+
+
+```
+'MA' plot for difference between conditions
+```{r}
+plotMA(dds)
+```
+Apply fold-change shrinkage
+```{r}
+res <- results(dds)
+
+resultsNames(dds)
+resLFC <- lfcShrink(dds, coef="condition_Tg_vs_DMSO", type="apeglm")
+
+resLFC %>% data.frame() %>% arrange(padj)
+
+sum(abs(resLFC$log2FoldChange)>1, na.rm=TRUE)
+
+plotMA(resLFC)
+
+res %>% data.frame() %>% arrange(padj) %>% head()
+
+txi$counts['ENSG00000175197',]
+
+plotMA(resLFC)
+
+res %>% data.frame() %>% saveRDS('./results/DESeq2_results_no_lf_compression.rds')
+resLFC %>% data.frame() %>% saveRDS('./results/DESeq2_results_with_lf_compression.rds')
+```
+
+If you want to run this notebook without access to the salmon quantification files, can do so from this cell onwards
+```{r}
+res <- readRDS('./results/DESeq2_results_no_lf_compression.rds')
+resLFC <- readRDS('./results/DESeq2_results_with_lf_compression.rds')
+```
+
+
+Annotate with gene names so we can highlight genes of interest
+```{r}
+library(biomaRt)
+ensembl <- useEnsembl(biomart="ensembl", version=102, dataset="hsapiens_gene_ensembl")
+
+ensmebl_gene_id_to_name <- getBM(attributes=c(
+  'ensembl_gene_id', 'external_gene_name', 'gene_biotype'), mart = ensembl,
+  filters="ensembl_gene_id", values=rownames(res))
+
+
+head(ensmebl_gene_id_to_name)
+```
+
+Volcano plot with genes of interest highlighted
+```{r}
+
+
+#'DDIT3'  == 'CHOP'
+foi <- ensmebl_gene_id_to_name %>% filter(external_gene_name %in% c('DDIT3', 'XBP1')) %>% pull(ensembl_gene_id)
+
+
+
+p <- res %>%
+  data.frame() %>%
+  tibble::rownames_to_column('gene_id') %>%
+  filter(is.finite(padj)) %>%
+  merge(ensmebl_gene_id_to_name, by.x='gene_id', by.y='ensembl_gene_id') %>%
+  filter(!grepl('pseudogene', gene_biotype)) %>%
+  mutate(pvalue_trunc = ifelse(-log10(pvalue)>20, 10^-20, pvalue),
+         log2FoldChange_trunc = ifelse(abs(log2FoldChange)>5, 5*sign(log2FoldChange), log2FoldChange),
+         label=ifelse(gene_id %in% foi, external_gene_name, '')) %>%
+  ggplot(aes(log2FoldChange_trunc, -log10(pvalue_trunc),
+             shape=ifelse(pvalue_trunc==10^-20, 'a', ifelse(abs(log2FoldChange)>5, 'b', 'c')),
+             fill=padj<0.05, size=padj<0.05)) +
+  geom_point(colour='grey25', stroke=0.25) +
+  geom_text_repel(aes(label=label), size=5, colour='black', box.padding=1) +
+  scale_shape_manual(values=c(24, 23, 21), guide=FALSE) +
+  scale_fill_manual(values=c('grey25', get_cat_palette(7)[7]), name='FDR < 5%') +
+  scale_size_manual(values=c(0.5, 2), guide=FALSE) +
+  theme_camprot(border=FALSE, base_size=15, base_family='sans') +
+  guides(fill = guide_legend(override.aes = list(size = 3, pch=21) ) ) +
+  xlim(-5, 5) +
+  xlab('UPR vs Control\nfold change (log2)') +
+  ylab('-log10 (p-value)')
+
+print(p)
+
+ggsave('./results/volcano_with_goi.png')
+ggsave('./results/volcano_with_goi.pdf')
+
+
+ggsave('../../../../5_manuscript_figures/Figure_4/upr/diff_abundance_volcano.png', width=5, height=3.5)
+ggsave('../../../../5_manuscript_figures/Figure_4/upr/diff_abundance_volcano.pdf', width=5, height=3.5)
+```
+
+
+
+GO analysis of up and down-regulated genes
+```{r}
+suppressMessages(library(goseq))
+suppressMessages(library(GO.db))
+
+```
+
+
+
+```{r, fig.height=6, fig.width=9}
+background <- resLFC %>% data.frame() %>% filter(is.finite(padj))
+in_cat_up <- (background$log2FoldChange>0 & background$padj<0.05)
+names(in_cat_up) <- rownames(background)
+table(in_cat_up)
+
+pwf_up <- nullp(in_cat_up, bias.data=log(background$baseMean,2))
+
+all_human_go <- readRDS('../../../../1_external/10_GO/all_go_genes_expanded.rds')
+
+go_results_up <- goseq(pwf_up, gene2cat=all_human_go)
+go_results_up$BH <- p.adjust(go_results_up$over_represented_pvalue, method='BH')
+print(head(go_results_up, 30))
+
+sig_terms_up <- go_results_up %>%
+  filter(BH<0.01) %>%
+  remove_redundant_go() %>%
+  estimate_go_overrep(pwf_up, gene2cat=all_human_go)
+
+nsig_with_any_terms <- intersect(names(in_cat_up)[in_cat_up], unique(all_human_go$ensembl_gene_id)) %>% length()
+print(length(sig_with_any_terms))
+
+x <- sig_terms_up %>%
+  filter(adj_overrep>2, numDEInCat>nsig_with_any_terms/20) %>%
+  arrange(-BH) %>%
+  mutate(term=paste0(term, ' (', ontology, ')')) %>%
+  mutate(term=factor(term, levels=unique(term)))
+
+p <- x %>% ggplot(aes(adj_overrep, term, fill=-log10(BH))) +
+  geom_bar(stat='identity') +
+  theme_camprot(border=FALSE) +
+  ylab('') +
+  xlab('Over-representation (log2)') +
+  scale_fill_continuous(low='grey80', high=get_cat_palette(1), name='-log10(FDR)') +
+  theme(aspect.ratio=2) +
+  geom_text(aes(label=numDEInCat), x=Inf, hjust=1) +
+  xlim(NA, max(x$adj_overrep)*1.1) +
+  ggtitle(sprintf('Increased abundance (%s)', nsig_with_any_terms)) +
+  theme(title=element_text(size=15))
+
+print(p)
+ggsave('./results/sig_up_go_terms.png')
+```
+GO terms upregulated make sense for ER stress, though EM is perhaps a little surprising.
+
+```{r}
+
+sig_terms_up %>% saveRDS('./results/sig_terms_up.rds')
+sig_terms_up %>% saveRDS('./results/sig_terms_up.rds')
+```
+
+Not enough significantly downregulated genes to perform a GO over-representation analysis.
+```{r}
+in_cat_dw <- (background$log2FoldChange<0 & background$padj<0.05)
+names(in_cat_dw) <- rownames(background)
+table(in_cat_dw)
+
+pwf_dw <- nullp(in_cat_dw, bias.data=log(background$baseMean,2))
+
+go_results_dw <- goseq(pwf_dw, gene2cat=all_human_go, method='Hypergeometric')
+go_results_dw$BH <- p.adjust(go_results_dw$over_represented_pvalue, method='BH')
+go_results_dw %>% filter(numDEInCat>1) %>% head(30)
+```
+
+

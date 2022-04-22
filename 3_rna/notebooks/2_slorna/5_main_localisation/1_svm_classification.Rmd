@@ -1,0 +1,52 @@
+---
+title: "SVM for main localisation"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we use SVM for main localisation assignment
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+```{r}
+library(pRoloc)
+library(pRolocExt)
+library(tidyverse)
+library(camprotR)
+select <- dplyr::select
+```
+
+Read in the data and subset to gene-level uncorrected datasets
+```{r}
+gene_quant <- readRDS('../2_data_processing/out/all_datasets.rds')$gene$uncorrected
+getMarkers(gene_quant)
+```
+
+```{r, eval=FALSE}
+params <- svmOptimisation(gene_quant,  cost = 2^(-3:5), sigma = 10^(-4:0), times = 100)
+saveRDS(params, './out/params.rds')
+```
+
+
+```{r}
+params <- readRDS('./out/params.rds')
+slorna <- svmClassification(gene_quant, params, scores='all')
+fvarLabels(slorna)
+slorna_svm_scores <- fData(slorna)$svm.all.scores %>%
+  data.frame()
+slorna_svm_scores_annot <- slorna_svm_scores %>%
+  merge((fData(slorna) %>% select(-svm.all.scores)), by='row.names')
+slorna_svm_scores_long <- slorna_svm_scores %>%
+  setNames(gsub('.svm.scores', '', colnames(.))) %>%
+  tibble::rownames_to_column('ensembl_gene_id') %>%
+  pivot_longer(cols=-ensembl_gene_id) 
+```
+
+```{r}
+saveRDS(slorna, './out/svm_res.rds')
+```
+

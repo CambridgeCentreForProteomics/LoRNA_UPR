@@ -1,0 +1,437 @@
+---
+title: "Plot localisations"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we plot the localisation proportion estimates
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+```{r}
+library(camprotR)
+library(tidyverse)
+library(MSnbase)
+library(pRoloc)
+library(pRolocExt)
+library(ggbeeswarm)
+
+select <- dplyr::select
+```
+Define colours for plots
+```{r}
+colours <- readRDS('../../../../../6_shiny_app/out/shiny_colours.rds')$RNA[1:6]
+```
+
+
+Read in the proportions and reduce the objects down to the required columns
+```{r}
+proportions <- readRDS('./results/proportions.rds') %>%
+  lapply(function(x){
+    x %>% 
+      select(id, condition,
+             Membrane, Cytosol, Granule, Nucleus, Nucleolus)
+  })
+
+
+proportions_per_rep <- readRDS(
+  './results/proportions_per_rep.rds') %>%
+  lapply(function(x){
+    x %>% 
+      select(markers, id, replicate, condition, mean_var_explained,
+             Membrane, Cytosol, Granule, Nucleus, Nucleolus)
+  })
+
+
+```
+
+Compare proportion estimates between replicates
+```{r, fig.height=6, fig.width=6}
+proportions_per_rep_wide <- proportions_per_rep %>%
+  lapply(function(x){
+    x %>% 
+    pivot_longer(cols=-c(markers, id, replicate, condition)) %>%
+    pivot_wider(names_from=replicate, values_from=value)
+  })
+
+proportions_per_rep_wide_simplified <- proportions_per_rep %>%
+  lapply(function(x){
+    x %>% 
+    mutate(Nuc=Nucleus+Nucleolus) %>%
+    pivot_longer(cols=-c(markers, id, replicate, condition)) %>%
+    pivot_wider(names_from=replicate, values_from=value)
+  })
+
+  
+proportions_per_rep_wide_simplified %>% sapply(function(x){
+  
+  p <- x %>%
+    filter(name != 'mean_var_explained') %>%
+      ggplot(aes(`1`, `2`)) +
+      geom_point(size=0.1, colour='grey20', alpha=0.1) +
+      theme_camprot(base_size=15) +
+      geom_abline(slope=1, linetype=2, colour=get_cat_palette(2)[2], size=0.5) +
+      facet_grid(condition~name) +
+      xlab('Replicate 1') +
+      ylab('Replicate 2') +
+      scale_x_continuous(breaks=seq(0,1,.5), labels=c('0', '0.5', '1')) +
+      scale_y_continuous(breaks=seq(0,1,.5), labels=c('0', '0.5', '1'))
+  
+  print(p)
+  print(p + aes(y=`3`) + ylab('Replicate 3'))
+  print(p + aes(x=`2`, y=`3`) + xlab('Replicate 2') + ylab('Replicate 3'))
+  invisible(NULL)
+})
+
+
+
+```
+Compare distributions of proportion estimates between replicates
+```{r}
+proportions_per_rep$gene %>%
+  select(-mean_var_explained) %>%
+  pivot_longer(cols=-c(markers, id, replicate, condition)) %>%
+  ggplot(aes(value, colour=replicate)) +
+  geom_density() +
+  theme_camprot(base_size=10) +
+  facet_grid(name~condition, scales='free_y') +
+  theme(strip.background=element_blank())
+```
+Crude classification by > 25% proportion. Counts per localisation, replicate, condition.
+```{r}
+proportions_per_rep$gene %>%
+  mutate(Nuc=Nucleus+Nucleolus) %>%
+  select(-c(Nucleus, Nucleolus, mean_var_explained)) %>%
+  pivot_longer(cols=-c(markers, id, replicate, condition)) %>%
+  group_by(replicate, condition, name) %>%
+  summarise(over_25=mean(value>0.25)) %>%
+  ggplot(aes(name, over_25)) +
+  geom_bar(stat='identity') +
+  theme_camprot(base_size=15, border=FALSE) +
+  facet_grid(condition~replicate) +
+  theme(strip.background=element_blank(),
+        axis.text.x=element_text(angle=45, vjust=1, hjust=1)) +
+  ylab('>25% localised')
+
+```
+Correlation table
+```{r}
+proportions_per_rep_wide_simplified %>% 
+  lapply(function(x){
+    x %>%
+      filter(!name %in% c('Nucleus', 'Nucleolus', 'mean_var_explained')) %>%
+      group_by(markers) %>%
+      summarise(cor_1_2=cor(`1`, `2`, use='complete', method='spearman'),
+                cor_1_3=cor(`1`, `3`, use='complete', method='spearman'),
+                cor_2_3=cor(`2`, `3`, use='complete', method='spearman'))
+  })
+```
+
+
+Plot the localsiation proportions for all markers. Should obviously be close to 1 for the correct localisation and close to zero for all others.
+```{r, fig.height=8, fig.width=6}
+proportions_per_rep %>% lapply(function(x){
+  p1 <- x %>%
+    mutate(Nuc=Nucleus+Nucleolus, markers=ifelse(markers %in% c('Nucleolus', 'Nucleus'), 'Nuc', markers)) %>%
+    select(-Nucleus, -Nucleolus) %>%
+    filter(markers!='unknown', condition=='DMSO') %>%
+    select(-c(mean_var_explained)) %>%
+    pivot_longer(names_to='localisation', values_to='lm_coef', cols=-c(markers, id, replicate, condition)) %>%
+    ggplot(aes(lm_coef, fill=localisation)) +
+    geom_histogram(binwidth=0.05, position='stack') +
+    #geom_density() +
+    facet_grid(markers~replicate, scales='free') +
+    theme_camprot(base_size=10) + xlim(0,1) +
+    scale_fill_manual(values=colours[c(1:3,5:6)], name='Localisation') +
+    scale_x_continuous(breaks=seq(0,1,.2), name='NNLS coefficient') +
+    ylab('Count')
+  
+  print(p1)
+  return(NULL)
+})
+
+```
+
+Read in the mean proportions
+```{r}
+mean_proportions <- readRDS('./results/proportions.rds') %>%
+  lapply(function(x){
+    x %>% select(Nucleus, Nucleolus, Membrane, Cytosol, Granule,
+                 id, condition)
+  })
+
+mean_proportions %>% lapply(function(x){
+  x %>% group_by(condition) %>%
+    tally()
+})
+
+```
+
+Read in the complete set of data
+```{r}
+
+all_datasets <- readRDS('./results/all_datasets_final.rds')
+
+```
+
+How many rows per object
+```{r}
+all_datasets %>%
+  names() %>%
+  lapply(function(level){
+    all_datasets[[level]] %>% names() %>%
+      lapply(function(condition){
+        nrow(all_datasets[[level]][[condition]]$corrected)
+      })
+    })
+
+```
+Plot PCAs and linear marker profiles.
+```{r}
+plot_pca <- function(obj, level, condition){
+  
+  pca_proj <- make_proj(obj)
+  
+  x_col <- colnames(pca_proj)[1]
+  y_col <- colnames(pca_proj)[2]
+  
+  pca_proj <- data.frame(pca_proj)
+  
+  
+  p <- pca_proj %>%
+    arrange(markers!='unknown') %>%
+    ggplot(aes_string(colnames(pca_proj)[1], colnames(pca_proj)[2])) +
+    xlab(x_col) +
+    ylab(y_col) +
+    theme_camprot(border=FALSE, base_size=15, base_family='sans') +
+    guides(alpha=FALSE, size=FALSE) +
+    geom_point() +
+    aes(colour=markers, alpha=markers=='unknown', size=markers=='unknown') +
+    scale_alpha_manual(values=c(1, 0.3)) +
+    scale_size_manual(values=c(1, 0.3)) +
+    scale_colour_manual(name='', values=c(colours, 'grey80')) +
+    theme(legend.background=element_blank())
+  
+  if(level=='gene'){
+    p <- p + theme(legend.position=c(0.01,0.01), legend.justification=c(0,0))
+  } else if(condition=='DMSO'){
+    p <- p + theme(legend.position=c(0.99,1.1), legend.justification=c(1,1))
+  } else{
+    p <- p + theme(legend.position=c(0.01,1.1), legend.justification=c(0,1))
+  }
+  
+  print(p)
+  ggsave(sprintf('../../../../../5_manuscript_figures/Figure_1/RNA_profiles/pca_%s_%s.png', level, condition),
+         height=5, width=5)
+  ggsave(sprintf('../../../../../5_manuscript_figures/Figure_1/RNA_profiles/pca_%s_%s.pdf', level, condition),
+         height=5, width=5)
+}
+
+all_datasets %>%
+  names() %>%
+  lapply(function(level){
+    all_datasets[[level]] %>% names() %>%
+      lapply(function(condition){
+        
+        .data <- all_datasets[[level]][[condition]]$corrected
+        
+        fData(.data)$markers[fData(.data)$markers=='Granule'] <- 'Cytosol-Light'
+        
+        plot_pca(.data, level, condition)
+        
+        print(c(level, condition))
+        p <- plot_marker_profiles(.data[fData(.data)$markers!='unknown'], plot_all=FALSE, group_by='replicate') +
+          scale_colour_manual(values=colours, name='') +
+          scale_x_discrete(labels=pData(.data)$fraction) +
+          theme_camprot(border=FALSE, base_size=15, base_family='sans') +
+          geom_vline(xintercept=8.5, colour='grey') +
+          geom_vline(xintercept=16.5, colour='grey') +
+          xlab('Fraction') +
+          ylab('Abundance\n(sum normalised)') +
+          theme(aspect.ratio=1/3)
+        
+        print(p)
+        ggsave(sprintf('../../../../../5_manuscript_figures/Figure_1/RNA_profiles/ave_linear_profile_%s_%s.png', level, condition), height=2.5)
+        ggsave(sprintf('../../../../../5_manuscript_figures/Figure_1/RNA_profiles/ave_linear_profile_%s_%s.pdf', level, condition), height=2.5)
+        
+        return(NULL)
+        
+      })
+    })
+
+
+```
+Plot alternative linear profile summarising across replicates
+```{r}
+obj <- all_datasets$transcript$DMSO$corrected
+obj <- obj[fData(obj)$markers!='unknown']
+
+exprs_df <- exprs(obj)
+f_df <- fData(obj) %>% dplyr::select(markers)
+exprs_df <- exprs_df %>% data.frame()
+new_colnames2old_colnames <- data.frame(new = colnames(exprs_df), 
+    old = colnames(exprs(obj)))
+
+exprs_df <- exprs_df %>% tibble::rownames_to_column("id") %>% 
+    tidyr::pivot_longer(-id, names_to = "sample", values_to = "abundance") %>% 
+    merge(new_colnames2old_colnames, by.x = "sample", by.y = "new") %>% 
+    mutate(sample = factor(camprotR::remove_x(old), levels = colnames(obj)))
+exprs_df <- merge(exprs_df, f_df, by.x = "id", by.y = "row.names") %>% 
+    merge(pData(obj), by.x = "sample", by.y = "row.names")
+
+stderr <- function(x, na.rm=FALSE) {
+  if (na.rm) x <- na.omit(x)
+  sqrt(var(x)/length(x))
+}
+
+summaried_exprs_df <- exprs_df %>%
+  group_by(fraction, markers, replicate) %>%
+  summarise('mean'=mean(abundance), 'se'=stderr(abundance), 'sd'=sd(abundance))
+
+p <- summaried_exprs_df %>%
+  filter(replicate==1) %>%
+  ggplot(aes(as.numeric(fraction), colour=markers, fill=markers)) +
+  geom_line(aes(y=mean)) +
+  geom_ribbon(aes(ymax=mean+sd, ymin=mean-sd), alpha=0.5, colour=NA) +
+  theme_camprot(border=FALSE, base_size=15, base_family='sans') +
+  scale_colour_manual(values=colours, guide=FALSE) +
+  scale_fill_manual(values=colours, guide=FALSE) +
+  theme(strip.text=element_blank(),
+        strip.background=element_blank()) +
+  scale_x_continuous(breaks=1:8, name='Fraction') +
+  ylab('Abundance\n(sum normalised)')
+
+print(p)
+ggsave('../../../../../5_manuscript_figures/Figure_1/RNA_profiles/linear.png', height=3, width=3)
+ggsave('../../../../../5_manuscript_figures/Figure_1/RNA_profiles/linear.pdf', height=3, width=3)
+
+p <- summaried_exprs_df %>%
+  ggplot(aes(as.numeric(fraction), colour=markers, fill=markers)) +
+  geom_line(aes(y=mean)) +
+  geom_ribbon(aes(ymax=mean+sd, ymin=mean-sd), alpha=0.5, colour=NA) +
+  facet_wrap(~replicate, nrow=1) +
+  theme_camprot(border=FALSE, base_size=15, base_family='sans') +
+  scale_colour_manual(values=colours, name='') +
+  scale_fill_manual(values=colours, guide=FALSE) +
+  theme(strip.text=element_blank(),
+        strip.background=element_blank()) +
+  scale_x_continuous(breaks=1:8, name='Fraction') +
+  ylab('Abundance\n(sum normalised)')
+
+print(p)
+ggsave('../../../../../5_manuscript_figures/Figure_1/RNA_profiles/linear_all.png', height=3, width=7)
+ggsave('../../../../../5_manuscript_figures/Figure_1/RNA_profiles/linear_all.pdf', height=3, width=7)
+
+
+```
+
+```{r}
+plot_proportions <- function(level, condition, flip_x=FALSE, flip_y=FALSE){
+  
+  obj <- all_datasets[[level]][[condition]]$corrected
+  proportions <- mean_proportions[[level]][mean_proportions[[level]]$condition==condition,]
+
+  
+  pca_proj <- make_proj(obj)
+
+  x_col <- colnames(pca_proj)[1]
+  y_col <- colnames(pca_proj)[2]
+  
+  if(flip_x){
+    pca_proj[[x_col]] = (-pca_proj[[x_col]])  
+  }  
+  
+  if(flip_y){
+    pca_proj[[y_col]] = (-pca_proj[[y_col]])  
+  }  
+  
+  pca_proj <- data.frame(pca_proj)
+  
+  p <- pca_proj %>%
+    arrange(markers!='unknown') %>%
+    ggplot(aes_string(colnames(pca_proj)[1], colnames(pca_proj)[2])) +
+    xlab(x_col) +
+    ylab(y_col) +
+    theme_camprot(border=FALSE) +
+    guides(alpha=FALSE)
+  
+  p1 <- p +
+    geom_point() +
+    aes(colour=markers, alpha=markers=='unknown') +
+    scale_alpha_manual(values=c(1, 0.1)) +
+    scale_colour_manual(name='', values=c(colours, 'grey'))
+  
+  print(p1)
+      
+  proportions <- proportions %>%
+    tibble::column_to_rownames('id') %>%
+    dplyr::select(-condition) %>%
+    mutate(max=rowMax(as.matrix(.)),
+               max_loc=colnames(.)[apply(.,1,which.max)])
+  
+  lm_results_for_pca <- pca_proj %>% merge(proportions, by='row.names')
+  
+  loc_to_colours = colours
+  names(loc_to_colours) <- gsub('-', '.', getMarkerClasses(obj)) 
+  loc_to_colours <- loc_to_colours[names(loc_to_colours)!='Mitochondrion']
+  
+  for(loc in names(loc_to_colours)){
+    p_proportions <- p + aes(colour=!!sym(loc)) +
+      geom_point(data=lm_results_for_pca) +
+      scale_colour_continuous(low='grey85', high=loc_to_colours[[loc]], limits=c(0,1))
+    
+    print(p_proportions)
+  }
+  
+  fun_color_range <- lapply(names(loc_to_colours), function(loc){
+    x <- colorRampPalette(c(loc_to_colours[loc], "grey85", "grey85"))
+    x(110)})
+  
+  names(fun_color_range) <- names(loc_to_colours)
+  
+  lm_results_for_pca <- lm_results_for_pca %>% rowwise() %>% mutate(colour=fun_color_range[[max_loc]][(1+(100*(1-max)))]) %>%
+    arrange(max)
+  
+  p_proportions <- p +
+    aes(colour=colour, size=max) +
+    geom_point(data=lm_results_for_pca) +
+    scale_colour_identity() +
+    scale_size_continuous(range=c(0.1, 0.5), limits=c(0.2, 1), guide=FALSE) +
+    theme_camprot(border=FALSE, base_size=15, base_family='sans')
+
+  print(p_proportions)
+  ggsave(sprintf('../../../../../5_manuscript_figures/Figure_4/proportion_pcas/%s_%s.png', level, condition),
+         height=5, width=5, plot=p_proportions)
+  ggsave(sprintf('../../../../../5_manuscript_figures/Figure_4/proportion_pcas/%s_%s.pdf', level, condition),
+         height=5, width=5, plot=p_proportions)
+
+
+
+}
+```
+
+
+
+Project localisation proportions onto PCA
+```{r}
+
+all_datasets %>%
+  names() %>%
+  lapply(function(level){
+    all_datasets[[level]] %>% names() %>%
+      lapply(function(condition){
+        if(level=='transcript' & condition=='Tg'){
+          plot_proportions(level, condition, flip_x=FALSE, flip_y=TRUE)
+        } else {
+          plot_proportions(level, condition, flip_x=FALSE, flip_y=FALSE)
+        }
+         
+      })
+    })
+```
+

@@ -1,0 +1,39 @@
+---
+title: "Make supplementary tables for protein results"
+output: html_notebook
+---
+
+```{r}
+suppressMessages(library(MSnbase))
+suppressMessages(library(tidyverse))
+suppressMessages(library(writexl))
+```
+
+```{r}
+dlopit <- readRDS('../6_shiny_app/out/dlopit.rds')
+```
+
+```{r}
+fData(dlopit$DMSO)
+
+feature_data <- dlopit %>% lapply(function(x){
+  fData(x) %>% tibble::rownames_to_column('uniprot_id')
+  })
+
+```
+
+```{r}
+feature_data_to_write <- list('control'=feature_data$DMSO,
+                              'upr'=feature_data$Thapsigargin)
+
+
+write_xlsx(
+  feature_data_to_write,
+  path = "./LOPIT.xlsx",
+  col_names = TRUE,
+  format_headers = TRUE,
+  use_zip64 = FALSE
+)
+
+```
+

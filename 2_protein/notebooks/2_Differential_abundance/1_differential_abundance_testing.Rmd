@@ -1,0 +1,102 @@
+---
+title: "Differential abundance"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we test for differential abundance at 1 hr Tg. Note that the results
+  here are not presented in the manuscript.
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontfamily: mathpazo
+fontsize: 11pt
+---
+
+
+```{r}
+library(DEqMS)
+library(camprotR)
+library(MSnbase)
+library(limma)
+library(tidyverse)
+```
+
+Read in the total protein abundance data. Note that the data parsing is performed
+in the `../1_LOPIT` directory.
+```{r}
+psm_filt <- readRDS('../out/psm_res_filt.rds')$Total
+colnames(psm_filt) <- paste(pData(psm_filt)$condition, pData(psm_filt)$replicate, sep='_')
+
+total_protein <- readRDS('../out/protein_res.rds')$Total
+colnames(total_protein) <- paste(pData(total_protein)$condition, pData(total_protein)$replicate, sep='_')
+
+pData(psm_filt)
+pData(total_protein)
+```
+Check the abundance distributions and normalise using naive 'diff median' method.
+```{r}
+
+plot_quant(log(total_protein, base=2))
+total_protein <- total_protein %>% log(base=2)
+total_protein <- MSnbase::normalise(total_protein, method='diff.median')
+exprs(total_protein) <- 2^(exprs(total_protein))
+plot_quant(log(total_protein, base=2))
+```
+
+Then we perform the linear modeling using limma
+
+```{r}
+condition <- factor(pData(total_protein)$condition, levels = c("DMSO", "Thapsigargin"))
+study.design <- model.matrix(~ condition)
+```
+
+
+```{r}
+# perform the linear modelling
+fit <- lmFit(log2(exprs(total_protein)), study.design)
+fit <- eBayes(fit, trend = TRUE)
+
+plotSA(fit, xlab = "mean ratio")
+```
+Check p-value distribution. Looks approximately uniform, though few small p-values. Under-powered?
+```{r}
+as.data.frame(fit) %>%
+  ggplot(aes(p.value.conditionThapsigargin)) +
+  geom_histogram() +
+  theme_camprot()
+```
+Volcano plot
+```{r}
+limma_res <- as.data.frame(fit) %>% 
+  mutate(BH=p.adjust(p.value.conditionThapsigargin, method='BH'))
+
+limma_res %>%
+  ggplot(aes(
+    x = coefficients.conditionThapsigargin, 
+    y = -log10(p.value.conditionThapsigargin), 
+    colour = BH < 0.1,
+    alpha = BH < 0.1)) + 
+  geom_point() +
+  theme_bw() + 
+  scale_color_manual(values = c("black", get_cat_palette(7)[7])) + 
+  labs(title = "Tg vs DMSO", 
+       colour = "adj.p < 0.1", alpha = "adj.p < 0.1")
+
+```
+Top most significant changes in protein abundance
+```{r}
+limma_res %>%
+  arrange(p.value.conditionThapsigargin) %>%
+  head()
+```
+
+Save to results
+```{r}
+saveRDS(limma_res, '../results/diff_abundance_limma.rds')
+```
+
+
+

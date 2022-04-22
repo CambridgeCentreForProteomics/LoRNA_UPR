@@ -1,0 +1,180 @@
+---
+title: "Examining the NNMF clustering"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we examine the clustering from NNMF in the previous notebook.
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+```{r}
+library(pRoloc)
+library(pRolocExt)
+library(camprotR)
+library(tidyverse)
+```
+
+```{r}
+dlorna_nnmf <- readRDS('./out/dlorna_gene_nnmf.rds')
+```
+
+Function to plot markers vs NNMF clusters. First consider the clusters from the relative abundance profiles ('uncorrected')
+```{r}
+compare_markers_nnmf <- function(obj){
+  fData(obj) %>%
+    group_by(allocation, markers) %>%
+    tally() %>%
+    group_by(markers) %>%
+    mutate(fraction=n/sum(n)) %>%
+    ggplot(aes(markers, allocation, fill=fraction)) +
+    geom_tile() +
+    geom_text(aes(label=n)) +
+    theme_camprot(base_size=15, base_family='sans', border=FALSE) +
+    theme(axis.text.x=element_text(angle=45, vjust=1, hjust=1)) +
+    xlab('A priori localisation marker') +
+    ylab('Cluster') +
+    scale_fill_gradient(low='white', high=get_cat_palette(2)[2], name='Fraction of\nmarkers') +
+    guides(fill=guide_colorbar(ticks=FALSE))
+}
+
+
+p <- compare_markers_nnmf(dlorna_nnmf$DMSO$uncorrected)
+print(p)
+compare_markers_nnmf(dlorna_nnmf$Tg$uncorrected)
+```
+
+
+```{r}
+print(p)
+ggsave('../../../../../5_manuscript_figures/Figure_1/rna_clustering/a_priori_vs_nnmf.png', width=5.5, height=4.5, plot=p)
+ggsave('../../../../../5_manuscript_figures/Figure_1/rna_clustering/a_priori_vs_nnmf.pdf', width=5.5, height=4.5, plot=p)
+```
+
+
+
+
+
+Now, let's compare NNMF cluster membership for the uncorrected datasets. We expect that NNMF_2 DMSO may be the same cluster as NNMF_4 Tg. 
+```{r}
+fvarLabels(dlorna_nnmf$Tg$uncorrected)
+co_membership <- merge(fData(dlorna_nnmf$DMSO$uncorrected)[, "allocation", drop=FALSE],
+      fData(dlorna_nnmf$Tg$uncorrected)[, "allocation", drop=FALSE],
+      by='row.names') %>%
+  group_by(allocation.x, allocation.y) %>%
+  tally()
+
+print(co_membership)
+
+co_membership %>% group_by(allocation.x) %>%
+  mutate(fraction=n/sum(n)) %>%
+  ggplot(aes(allocation.x, allocation.y, fill=fraction)) +
+  geom_tile() +
+  geom_text(aes(label=n)) +
+  theme_camprot(base_size=14) +
+  theme(axis.text.x=element_text(angle=45, vjust=1, hjust=1)) +
+  xlab('DMSO') +
+  ylab('Tg') +
+  scale_fill_gradient(low='white', high=get_cat_palette(2)[2], name='Fraction DMSO\nfactor')
+```
+
+
+Let's identify the top RNAs for DMSO NNMF_2 and Tg NNMF_3. Then we can inspect these as potential markers for this novel profile
+```{r}
+dmso_nnmf_2 <- fData(dlorna_nnmf$DMSO$uncorrected) %>% arrange(-NNMF_2) %>% rownames() %>% head(100)
+tg_nnmf_3 <- fData(dlorna_nnmf$Tg$uncorrected) %>% arrange(-NNMF_3) %>% rownames() %>% head(100)
+goi <- intersect(dmso_nnmf_2, tg_nnmf_3)
+print(length(goi))
+
+plot_pca_goi <- function(obj, goi){
+  pca_proj <- make_proj(obj, fcol = 'markers')
+  
+  x_col <- colnames(pca_proj)[1]
+  y_col <- colnames(pca_proj)[2]
+  
+  pca_proj <- data.frame(pca_proj)
+  
+  p <- pca_proj %>%
+    arrange(markers!='unknown') %>%
+    ggplot(aes_string(colnames(pca_proj)[1], colnames(pca_proj)[2])) +
+    xlab(x_col) +
+    ylab(y_col) +
+    theme_camprot() +
+    guides(alpha=FALSE) +
+    geom_point() +
+    aes(colour=markers, alpha=markers=='unknown') +
+    scale_alpha_manual(values=c(1, 0.1)) +
+    scale_colour_manual(name='', values=c(get_cat_palette(4), 'grey'))
+  
+  print(p)
+  
+  goi_proj <- pca_proj[intersect(rownames(pca_proj), goi),]
+  p2 <- p + geom_point(data=goi_proj, colour='black', size=3, pch=8, alpha=1)
+  print(p2)
+}
+
+plot_pca_goi(dlorna_nnmf$DMSO$uncorrected, goi)
+plot_pca_goi(dlorna_nnmf$Tg$uncorrected, goi)
+plot_pca_goi(dlorna_nnmf$DMSO$corrected, goi)
+plot_pca_goi(dlorna_nnmf$Tg$corrected, goi)
+saveRDS(goi, './out/novel_cyt_cluster_members.rds')
+
+```
+What about functional over-representations?
+
+lncRNAs
+```{r}
+total_data <- readRDS('../1_data_processing/out/gene_quant_total_res.rds')
+mean_exprs <- rowMeans(exprs(total_data), na.rm=TRUE)
+
+library(goseq)
+test <- fData(dlorna_nnmf$DMSO$uncorrected)
+table(test$gene_biotype, test$allocation_confident)
+
+test_cyt_only <- test[test$allocation_confident %in% c('NNMF_2', 'NNMF_4'),]
+
+fisher.test(table(test_cyt_only$gene_biotype=='lncRNA',
+                  test_cyt_only$allocation_confident=='NNMF_2'))
+
+table(test$gene_biotype, test$allocation_confident) %>%
+  data.frame() %>%
+  filter(!Var2 %in% c('unknown', 'NNMF_1'), Freq>0) %>%
+  mutate(Var1=factor(Var1, levels=rev(c('protein_coding', 'snoRNA', 'scaRNA', 'misc_RNA', 'lncRNA')))) %>%
+  mutate(Freq_label=ifelse(Freq>10, Freq, NA)) %>%
+  ggplot(aes(Var2, Freq, fill=Var1)) +
+  geom_bar(stat='identity', position='fill') +
+  geom_text(aes(label=Freq_label), position=position_fill(vjust=0.5)) +
+  scale_fill_manual(values=get_cat_palette(5), name='') +
+  theme_camprot() +
+  xlab('NNMF cluster') +
+  theme(axis.text.x=element_text(angle=45, vjust=1, hjust=1))
+```
+
+GO terms
+```{r}
+suppressMessages(library(GO.db))
+go_human <- readRDS('../../../../../1_external/10_GO/all_go_genes_expanded.rds')
+```
+
+```{r}
+in_cat <- fData(dlorna_nnmf$DMSO$uncorrected)$allocation_confident=='NNMF_2'
+names(in_cat) <- rownames(test)
+table(in_cat)
+
+pwf <- nullp(in_cat,bias.data=log(mean_exprs[names(in_cat)]+1))
+
+go_results <- camprotR::get_enriched_go(pwf, gene2cat=go_human, method='Hypergeometric')
+
+go_results_flt <- go_results %>% filter(over_represented_adj_pval<0.01) %>% camprotR::remove_redundant_go()
+
+head(go_results_flt, 10)
+```
+OK, so nothing hugely exciting. Looks like an enrichment for mRNA encoding TFs.
+
+
+

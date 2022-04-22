@@ -1,0 +1,53 @@
+---
+title: "Combine RNA mod annoatations"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we combine the annotations for m6A, m7G etc from m6A atlas
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+```{r}
+library(dplyr)
+library(tidyr)
+```
+
+Read in the RNA mod data table
+```{r}
+infiles <- Sys.glob('./*Human_Basic_Site_Information.txt')
+
+combined_mod_long <- infiles %>% lapply(function(x){
+  mod_name <- gsub('_Human_Basic_Site_Information.txt$', '', basename(x))
+  
+  no_col <- max(count.fields(x, sep = " "))
+  
+  mod_annot <- read.delim(x, sep=' ', row.names=NULL, header=FALSE, col.names=paste0('V', 1:no_col)) %>%
+    filter(!grepl('intron|intergenic|stream', V9)) %>%
+    mutate(mod=mod_name) %>%
+    dplyr::select(V2, V3, V4, V5, V6, V8, V9, V14, mod)
+  
+  return(mod_annot)
+}) %>% bind_rows()
+
+table(combined_mod_long$V9)
+
+```
+
+```{r}
+combined_mod_wide <- combined_mod_long %>% group_by(ensembl_gene_id=V8, mod) %>% tally() %>%
+  pivot_wider(names_from=mod, values_from=n)
+
+combined_mod_wide[is.na(combined_mod_wide)] <- 0
+dim(combined_mod_wide)
+```
+
+```{r}
+
+saveRDS(combined_mod_wide, './combined_mod_wide.rds')
+```
+

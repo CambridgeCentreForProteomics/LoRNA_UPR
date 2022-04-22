@@ -1,0 +1,122 @@
+---
+title: "Signal/TM annotations"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we extract Signal peptide / TM information from Ensembl and Uniprot
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+Load libraries
+```{r}
+library(biomaRt)
+library(tidyverse)
+```
+
+
+Extract TM & signal information from Ensembl
+```{r}
+
+ensembl <- useEnsembl(biomart="ensembl", version=102, dataset="hsapiens_gene_ensembl")
+
+ensembl_tm_proteins <- getBM(attributes=c('ensembl_peptide_id', 'tmhmm', 'tmhmm_start', 'tmhmm_end'), mart = ensembl)
+ensembl_tm_proteins <- ensembl_tm_proteins %>% filter((tmhmm!=""|!is.na(tmhmm_start)|!is.na(tmhmm_end)))
+
+ensembl_signal_proteins <- getBM(attributes=c('ensembl_peptide_id', 'signalp', 'signalp_start', 'signalp_end'), mart = ensembl)
+ensembl_signal_position <- ensembl_signal_proteins %>% filter(signalp!="")
+
+transcript2peptide <- getBM(attributes=c('ensembl_peptide_id', 'ensembl_transcript_id'), mart = ensembl)
+transcript2peptide <- transcript2peptide %>% filter(ensembl_peptide_id!="")
+
+transcript2cdslength <- getBM(attributes=c('cds_length', 'ensembl_transcript_id'), mart = ensembl)
+
+peptide2protein <- getBM(attributes=c('ensembl_peptide_id', 'uniprotswissprot'), mart = ensembl)
+peptide2protein <- peptide2protein %>% filter(uniprotswissprot!="")
+```
+
+
+
+Generate annotations denoting presence/absence for TM/signal
+```{r}
+transcript_tm_annotations <-  ensembl_tm_proteins %>% group_by(ensembl_peptide_id) %>%
+  summarise("TMs"=length(tmhmm), 'tm_start'=min(tmhmm_start)) %>%
+  merge(transcript2peptide, by="ensembl_peptide_id", all.y=TRUE)
+
+transcript_signal_annotations <-  ensembl_signal_position %>% group_by(ensembl_peptide_id) %>%
+  summarise('signal_start'=min(signalp_start)) %>%
+  merge(transcript2peptide, by="ensembl_peptide_id", all.y=TRUE)
+
+transcript_tm_signal_annotations <-  merge(transcript_tm_annotations, transcript_signal_annotations, by=c('ensembl_transcript_id', 'ensembl_peptide_id'))
+
+transcript_tm_signal_annotations$TMs[is.na(transcript_tm_signal_annotations$TMs)] <- 0
+transcript_tm_signal_annotations$Signal <- !is.na(transcript_tm_signal_annotations$signal_start)
+
+transcript_tm_signal_annotations <- transcript_tm_signal_annotations %>%
+  mutate(comb_Signal=ifelse(Signal, "Signal", "No Signal"),
+         comb_TM=ifelse(TMs, "TM", "No TM")) %>%
+  mutate(Signal_TM=interaction(comb_Signal, comb_TM)) %>%
+  mutate(Signal_TM=recode(Signal_TM, 'No Signal.No TM'='No signal/TM', 'Signal.No TM'='Signal', 'No Signal.TM'='TM', 'Signal.TM'='Signal & TM')) %>%
+  merge(transcript2cdslength, by='ensembl_transcript_id') %>%
+  mutate(protein_length=floor(cds_length/3)) %>%
+  rowwise() %>%
+  mutate(distance_from_start=ifelse((is.na(tm_start) & is.na(signal_start)), NA, min(tm_start, signal_start, na.rm=TRUE))) %>%
+  mutate(distance_from_end=protein_length-(distance_from_start))
+  
+
+```
+
+Here, we obtain a more conservative annotation for signal/TM by inclusing the Uniprot annotations too. The agreement between ensembl and Uniprot at the protein level is not perfect so we take conservative 'either ensembl or Uniprot' approach
+```{r}
+uniprot_signal_tm <- read.delim('./uniprot_signal_tm.tsv.gz') %>%
+  dplyr::select('uniprotswissprot'=Entry) %>%
+  mutate('uniprot_signal_tm'=1) %>%
+  merge(peptide2protein, by='uniprotswissprot') %>% 
+  dplyr::select(ensembl_peptide_id, uniprot_signal_tm) %>%
+  unique()
+
+```
+
+Finalise the TM/Signal annotations
+```{r}
+transcript_tm_signal_annotations <- transcript_tm_signal_annotations %>%
+  merge(uniprot_signal_tm, by='ensembl_peptide_id', all.x=TRUE)
+
+transcript_tm_signal_annotations$uniprot_signal_tm[is.na(transcript_tm_signal_annotations$uniprot_signal_tm)] <- 0
+
+transcript_tm_signal_annotations <- transcript_tm_signal_annotations %>%
+  mutate(conservative_signal_tm=(TMs>0 | Signal | uniprot_signal_tm))
+
+```
+
+
+Generate gene-level annotations. For this, we will take the transcript annotation with the minimum distance from signal/TM to start of polypeptide, since this is the feature we are most interested in
+```{r}
+tx2gene <- getBM(attributes=c('ensembl_gene_id', 'ensembl_transcript_id'), mart = ensembl)
+
+# Gene-level annotations
+gene_tm_signal_annotations <- transcript_tm_signal_annotations %>%
+  merge(tx2gene, by='ensembl_transcript_id') %>%
+  #filter(ensembl_gene_id=='ENSG00000001036') %>%
+  group_by(ensembl_gene_id) %>%
+  slice_min(order_by=distance_from_start, n=1, with_ties=FALSE)
+    
+
+gene_tm_signal_annotations
+
+```
+
+Save the annotations for use in analysis notebooks
+```{r}
+tm_signal_annotations <- NULL
+tm_signal_annotations$gene <- gene_tm_signal_annotations
+tm_signal_annotations$transcript <- transcript_tm_signal_annotations
+
+saveRDS(tm_signal_annotations, './tm_signal_annotations.rds')
+```
+

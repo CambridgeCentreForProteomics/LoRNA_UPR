@@ -1,0 +1,273 @@
+---
+title: "Relocalisation of lncRNAs to granules"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we consider the relocalisation of lncRNAs to granules 
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+```{r}
+library(camprotR)
+library(tidyverse)
+library(MSnbase)
+library(biomaRt)
+library(ggbeeswarm)
+
+```
+Read in the proportions
+```{r}
+proportions <- readRDS('../../1_dlorna/2_lorna/5_relocalisation/out/proportions_annot.rds') %>%
+  lapply(function(x) x %>% mutate(gene_biotype=recode(gene_biotype, 'Protein coding'='mRNA')))
+```
+
+Identify the RNAs which are not nuclear (< 20%) according to sLoRNA
+```{r}
+slorna_not_nuc <- readRDS('../../2_slorna/4_proportional_localisation/results/proportions.rds') %>% filter(Nucleus<0.2) %>% pull(id)
+```
+
+Extract the granule relocalisation data
+```{r}
+
+level='gene'
+granule_relocalisation <- proportions %>% names() %>% lapply(function(level){
+  
+  .data <- proportions[[level]] %>%
+    filter((Cytosol+Granule+Membrane)>0.8)
+  
+  if(level=='transcript'){
+  .data %>%
+    dplyr::select(ensembl_gene_id, id, condition, gene_biotype, Granule) %>%
+    pivot_wider(names_from=condition, values_from=Granule) %>%
+    filter(is.finite(DMSO), is.finite(Tg)) %>%
+    mutate(diff=Tg-DMSO)
+  
+  } else{
+    .data %>%
+      dplyr::select(id, condition, gene_biotype, Granule) %>%
+      pivot_wider(names_from=condition, values_from=Granule) %>%
+      filter(is.finite(DMSO), is.finite(Tg)) %>%
+      mutate(diff=Tg-DMSO)
+
+  }
+})
+
+
+names(granule_relocalisation) <- names(proportions)
+granule_relocalisation %>% lapply(nrow)
+granule_relocalisation %>% lapply(function(x) table(x$gene_biotype))
+```
+
+
+Confirming that the variability for granule relocalisation is relatively similar for mRNA and lncRNAs.
+```{r}
+proportions$transcript %>%
+  filter(gene_biotype %in% c('mRNA', 'lncRNA')) %>%
+  ggplot(aes(sd_Cytosol, colour=gene_biotype)) +
+  geom_density() +
+  facet_wrap(~condition) +
+  theme_camprot() +
+  scale_color_manual(values=get_cat_palette(2), name='Gene biotype') +
+  xlab('Cytosol proportion SD') +
+  ylab('Density')
+
+proportions$transcript %>%
+  filter(gene_biotype %in% c('mRNA', 'lncRNA')) %>%
+  ggplot(aes(sd_Granule, colour=gene_biotype)) +
+  geom_density() +
+  facet_wrap(~condition) +
+  theme_camprot() +
+  scale_color_manual(values=get_cat_palette(2), name='Gene biotype') +
+  xlab('Granule proportion SD') +
+  ylab('Density')
+```
+Plot the distribution of relocalisation to granules for mRNA and lncRNA
+```{r}
+
+
+p <- granule_relocalisation$transcript %>%
+  filter(gene_biotype %in% c('mRNA', 'lncRNA')) %>%
+  mutate(facet=ifelse(ensembl_gene_id %in% slorna_not_nuc, 'sLoRNA cyt', 'other')) %>%
+  ggplot(aes(diff, colour=gene_biotype)) +
+  stat_ecdf() +
+  theme_camprot(border=FALSE, base_size=15, base_family='sans') +
+  ylab('Fraction of RNAs') +
+  xlab('Granule proportion (UPR - Control)') +
+  scale_color_manual(values=c('grey40', get_cat_palette(7)[7]), name='Gene biotype') +
+  geom_vline(xintercept=0, linetype=2, colour='grey')
+
+print(p)
+ggsave('../../../../5_manuscript_figures/Figure_5/lncRNA/lncRNA_vs_mRNA_granule_reloc.png', width=5, height=3.5)
+ggsave('../../../../5_manuscript_figures/Figure_5/lncRNA/lncRNA_vs_mRNA_granule_reloc.pdf', width=5, height=3.5)
+
+print(p +   facet_wrap(~facet))
+
+granule_relocalisation$transcript %>%
+  filter(gene_biotype %in% c('mRNA', 'lncRNA')) %>%
+  mutate(facet=ifelse(ensembl_gene_id %in% slorna_not_nuc, 'sLoRNA cyt', 'other')) %>%
+  ggplot(aes(diff, colour=gene_biotype)) +
+  geom_density() +
+  theme_camprot(base_size=15,border=FALSE, base_family='sans') +
+  scale_color_manual(values=c('grey40', get_cat_palette(7)[7]), name='Gene biotype') +
+  facet_wrap(~facet)+
+  ylab('Density') +
+  xlab('Relocalisation to granules') +
+  scale_color_manual(values=get_cat_palette(2), name='Gene biotype') +
+  geom_vline(xintercept=0, linetype=2, colour='grey')
+
+```
+Get AU frequency for all RNAs (previously when we obtained this and modelled relocalisation to granules, we were just considering mRNAs, not lncRNAs)
+```{r}
+ensembl <- useEnsembl(biomart="ensembl", version=102, dataset="hsapiens_gene_ensembl")
+
+transcript_seq <- getBM(attributes=c('cdna', 'ensembl_transcript_id'), mart=ensembl, filters='ensembl_transcript_id',
+                    values=unique(granule_relocalisation$transcript$id))
+
+transcript_seq <- transcript_seq[transcript_seq[,1]!="Sequence unavailable",]
+
+transcript_seq_bs <- transcript_seq[,1] %>%
+  gsub(pattern='T', replacement='U') %>%
+  Biostrings::RNAStringSet()
+
+nc_freq <- Biostrings::oligonucleotideFrequency(transcript_seq_bs, width=1, as.prob=TRUE) %>%
+    data.frame()
+
+rownames(nc_freq) <- transcript_seq$ensembl_transcript_id
+nc_freq <- nc_freq %>% mutate(AU=A+U)
+
+
+trinc_freq <- Biostrings::oligonucleotideFrequency(transcript_seq_bs, width=3, as.prob=TRUE) %>%
+    data.frame()
+
+
+rownames(trinc_freq) <- transcript_seq$ensembl_transcript_id
+
+head(transcript_seq)
+transcript_seq$transcript_length <- nchar(transcript_seq$cdna)
+```
+Plot AU content vs relocalisation for mRNA and lncRNA.
+```{r}
+to_plot <- granule_relocalisation$transcript %>% merge(nc_freq, by.x='id', by.y='row.names') %>%
+  filter(gene_biotype %in% c('mRNA', 'lncRNA')) %>%
+  mutate(AU_bin=Hmisc::cut2(AU, g=6)) %>%
+  mutate(facet=ifelse(ensembl_gene_id %in% slorna_not_nuc, 'sLoRNA cyt', 'other')) 
+
+
+  
+
+p <- to_plot %>%
+  ggplot(aes(AU_bin, diff, colour=gene_biotype, group=interaction(AU_bin, gene_biotype))) +
+  #geom_boxplot(outlier.size=0.5, notch=TRUE) +
+  geom_quasirandom(size=0.25, dodge.width=0.9, position='dodge') +
+  stat_summary(geom='errorbar', fun.max=median, fun.min=median, position=position_dodge(width=0.9), colour='black', width=0.5) +
+  theme_camprot(base_size=15,border=FALSE, base_family='sans') +
+  geom_hline(yintercept=0, colour='grey', linetype=2) +
+  scale_color_manual(values=c('grey50', get_cat_palette(7)[7]), name='Gene biotype') +
+  #theme(axis.text.x=element_text(size=10, angle=45, hjust=1, vjust=1)) +
+  theme(axis.text.x=element_blank(),
+      axis.ticks=element_blank()) +
+  xlab('AU content') +
+  ylab('Granule proportion\n(UPR - Control)') +
+  guides(color = guide_legend(override.aes = list(size = 3) ) )
+
+print(p)
+
+range <- to_plot %>% pull(diff)
+
+range <- range[is.finite(range)]
+
+range_range <- max(range)-min(range)
+tri_min <- max(range) - (range_range*1.15)
+tri_max <- max(range) - (range_range*1.1)
+  
+p2 <- p +
+  xlab('\n\n\n') +
+  annotate(geom='polygon', x=c(0.75,6.15,6.15,0.75), y=c(tri_min, tri_min, tri_max, tri_min), fill='grey40')  +
+  annotate(geom='text', x=3.5, y=(max(range) - (range_range*1.2)), label='AU content', size=5, vjust=0.5) +
+  coord_cartesian(ylim=c(min(range), max(range)), clip = 'off')
+
+
+print(p2)
+ggsave('../../../../5_manuscript_figures/Figure_5/lncRNA/lncRNA_vs_mRNA_au_content_granule_reloc.png', width=5, height=3.5, plot=p2)
+ggsave('../../../../5_manuscript_figures/Figure_5/lncRNA/lncRNA_vs_mRNA_au_content_granule_reloc.pdf', width=5, height=3.5, plot=p2)
+
+print(p2 +facet_wrap(~facet))
+```
+
+```{r}
+to_plot %>%
+  ggplot(aes(diff, colour=AU_bin)) +
+  stat_ecdf() +
+  theme_camprot(base_size=15,border=FALSE, base_family='sans') +
+  ylab('Fraction of RNAs') +
+  xlab('Relocalisation to granules') +
+  geom_vline(xintercept=0, linetype=2, colour='grey') +
+  facet_wrap(~gene_biotype) +
+  scale_colour_viridis_d(direction=-1, name='AU content')
+```
+
+Plot length vs relocalisation for mRNA and lncRNA
+```{r}
+colnames(transcript_seq)
+to_plot <- granule_relocalisation$transcript %>%
+  merge(transcript_seq[,c("ensembl_transcript_id", "transcript_length" )], by.x='id', by.y='ensembl_transcript_id') %>%
+  filter(gene_biotype == c('mRNA', 'lncRNA')) %>%
+  mutate(transcript_length_bin=Hmisc::cut2(transcript_length, g=6)) %>%
+  mutate(facet=ifelse(ensembl_gene_id %in% slorna_not_nuc, 'sLoRNA cyt', 'other')) 
+
+n_rnas <- to_plot %>%
+  group_by(gene_biotype, transcript_length_bin) %>%
+  tally()
+
+p <- to_plot %>%
+  ggplot(aes(transcript_length_bin, diff, colour=gene_biotype, group=interaction(gene_biotype, transcript_length_bin))) +
+  #geom_boxplot(outlier.size=0.5, notch=TRUE) +
+  geom_quasirandom(size=0.25, dodge.width=0.9, position='dodge') +
+  stat_summary(geom='errorbar', fun.max=median, fun.min=median, position=position_dodge(width=0.9), colour='black', width=0.5) +
+  theme_camprot(base_size=15,border=FALSE, base_family='sans') +
+  geom_hline(yintercept=0, colour='grey', linetype=2) +
+  scale_color_manual(values=c('grey50', get_cat_palette(7)[7]), name='Gene biotype') +
+  #theme(axis.text.x=element_text(size=10, angle=45, hjust=1, vjust=1)) +
+  theme(axis.text.x=element_blank(),
+      axis.ticks=element_blank()) +
+  xlab('Transcript length (nt)') +
+  ylab('Granule proportion\n(UPR - Control)') +
+  guides(color = guide_legend(override.aes = list(size = 3) ) )
+
+print(p)
+
+range <- to_plot %>% pull(diff)
+
+range <- range[is.finite(range)]
+
+range_range <- max(range)-min(range)
+tri_min <- max(range) - (range_range*1.15)
+tri_max <- max(range) - (range_range*1.1)
+  
+p2 <- p +
+  xlab('\n\n\n') +
+  annotate(geom='polygon', x=c(0.75,6.15,6.15,0.75), y=c(tri_min, tri_min, tri_max, tri_min), fill='grey40')  +
+  annotate(geom='text', x=3.5, y=(max(range) - (range_range*1.2)), label='Transcript length', size=5, vjust=0.5) +
+  coord_cartesian(ylim=c(min(range), max(range)), clip = 'off')
+
+print(p2)
+
+p3 <- p2 + geom_text(data=n_rnas, y=Inf,
+                     aes(label=n, group=gene_biotype, vjust=ifelse(gene_biotype=='lncRNA', 1.2, 0.2)),
+                         show.legend = FALSE)
+
+print(p3)
+
+ggsave('../../../../5_manuscript_figures/Figure_5/lncRNA/lncRNA_vs_mRNA_length_granule_reloc.png', width=5, height=3.5, plot=p2)
+ggsave('../../../../5_manuscript_figures/Figure_5/lncRNA/lncRNA_vs_mRNA_length_granule_reloc.pdf', width=5, height=3.5, plot=p2)
+
+print(p2 + facet_wrap(~facet))
+```
+```
+

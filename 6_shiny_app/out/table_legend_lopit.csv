@@ -1,0 +1,12 @@
+gene_names,UniprotKB gene name(s)
+UniProtKB_name,UniprotKB entry name
+markers,Localisation marker. ‘unknown’ = not a marker
+protein_name,UniprotKB protein name
+function,UniprotKB protein function
+tsne_dim1,t-SNE dimention 1 coordinate
+tsne_dim2,t-SNE dimention 1 coordinate
+primary_localisation,Primary localisation. ‘Undefined’ = Multiple primary localisations across replicates. NA = Insufficient data for localisation determination
+primary_localisation_per_rep,Primary localisations per replicate. ‘Undefined’ = Multiple primary localisations across replicates. NA = Insufficient data for localisation determination
+diff_loc_level,"Confidence level for differential localisation (‘Highly confident’, ‘Confident’ or ‘Candidate’). NA = Not differentially localised"
+n_diff_loc_reps,How many replicates (out of 3) was the protein differentially localised at this level of confidence
+diff_loc_reps,Which replicates was the protein differentially localised at this level of confidence

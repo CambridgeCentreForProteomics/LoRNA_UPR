@@ -1,0 +1,123 @@
+---
+title: "Normalising the RNA abundances"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we normalise the RNA abundances to take account of the amount of RNA in
+  each fraction. We will use two methods for this. 1) Bioanalyzer quantification.
+  2) SIRV spike ins. 
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontfamily: mathpazo
+fontsize: 11pt
+---
+
+RNA-Seq provides relative quantification since we prepare libraries from a subset
+of the input material and then sequence a subset of the reads. Our expression units
+are transcripts per million (TPM) so they take account of the number of reads
+per library. As such, it's valid to compare TPM values between fractions and
+we could just use these relative quantifications for our analysis. However, if
+we want to estimate the proportional localisation of each RNA, we need to adjust
+the quantification to take account of how much RNA there was in each fraction. 
+For a mathematic proof and simulation to demonstrate this in a protein context, see our review:
+
+Crook & Smith (2020). Moving Profiling Spatial Proteomics Beyond Discrete
+Classification. https://doi.org/10.1002/pmic.201900392
+
+```{r}
+library(MSnbase)
+library(biobroom)
+library(tidyverse)
+
+select <- dplyr::select
+```
+
+```{r}
+gene_quant_fractions <- readRDS("./out/gene_quant_lorna_res.rds")
+
+transcript_quant_fractions <- readRDS("./out/transcript_quant_lorna_res.rds")
+
+```
+
+Approach number 1: Use the bioanalyser quantification
+```{r}
+rna_fractions_used <- read.table('../../../../../experimental_design/RNA_proportions_used.tsv', header=TRUE)
+
+```
+
+```{r}
+correction_factors <- rna_fractions_used %>%
+  mutate(correction_factor=1/proportion_initial_fraction) %>%
+  dplyr::select(treatment, replicate, merge_fraction, correction_factor) %>%
+  unique() %>%
+  mutate(replicate=replicate-1) %>% #  replicates 2-4 were used. These are referred to as replicates 1-3 for the publication 
+  filter(replicate>0) %>%
+  mutate(
+    treatment=recode(treatment, 'TG'='Tg'),
+    'sample'=paste('dLoRNA', treatment, replicate, merge_fraction, sep='.')) %>%
+  tibble::column_to_rownames('sample')
+
+
+```
+
+```{r}
+correct_for_abundance <- function(obj, correction_factors){
+  
+  if(!identical(sort(colnames(obj)), sort(rownames(correction_factors)))){
+    print(sort(colnames(obj)))
+    print(sort(rownames(correction_factors)))
+    stop('obj colnames and correction_factors rownames must be identical (post sort)')
+  }
+    
+  correction_factors <- correction_factors[colnames(obj),]
+
+  out <- obj
+  exprs(out) <- t(t(exprs(out))*correction_factors$correction_factor)
+  
+  return(out)
+  
+}
+
+gene_quant_fractions_bio_corrected <- correct_for_abundance(
+  gene_quant_fractions, correction_factors)
+
+transcript_quant_fractions_bio_corrected <- correct_for_abundance(
+  transcript_quant_fractions, correction_factors)
+
+
+```
+
+
+And approach 2. Using the SIRVs.
+```{r}
+
+sirv <- readRDS('./results/sirv_correction.rds') %>%
+  mutate(correction_factor=ng_non_rRNA,
+         'sample'=paste(LoRNA, condition, replicate, fraction, sep='.')) %>%
+  tibble::column_to_rownames('sample')
+
+```
+
+```{r}
+
+gene_quant_fractions_sirv_corrected <- correct_for_abundance(
+  gene_quant_fractions, sirv)
+
+transcript_quant_fractions_sirv_corrected <- correct_for_abundance(
+  transcript_quant_fractions, sirv)
+
+```
+
+
+```{r}
+saveRDS(gene_quant_fractions_bio_corrected, "./out/gene_quant_fractions_bio_corrected.rds")
+saveRDS(transcript_quant_fractions_bio_corrected, "./out/transcript_quant_fractions_bio_corrected.rds")
+
+saveRDS(gene_quant_fractions_sirv_corrected, "./out/gene_quant_fractions_sirv_corrected.rds")
+saveRDS(transcript_quant_fractions_sirv_corrected, "./out/transcript_quant_fractions_sirv_corrected.rds")
+```
+

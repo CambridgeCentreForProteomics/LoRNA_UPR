@@ -1,0 +1,159 @@
+---
+title: "Membrane"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we examine the relocalisation away from the membranes and consider the role
+  of the position of the signal peptide/TM.
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+```{r}
+library(camprotR)
+library(tidyverse)
+library(MSnbase)
+library(biomaRt)
+library(ggtern)
+```
+
+```{r}
+all_datasets <- readRDS('../3_proportional_localisation/results/all_datasets_final.rds')
+proportions <- readRDS('../3_proportional_localisation/results/proportions.rds')
+```
+
+```{r}
+tm_signal_annotations <- readRDS('../../../../../1_external/12_signal_TM/tm_signal_annotations.rds')
+```
+
+Make feature data from MSnSet fData.
+```{r}
+
+
+feature_data <- NULL
+feature_data$gene <- fData(all_datasets$gene$DMSO$corrected) %>%
+  merge(tm_signal_annotations$gene, by.x='row.names', by.y='ensembl_gene_id', all.x=TRUE)
+
+feature_data$transcript <- fData(all_datasets$transcript$DMSO$corrected) %>%
+  merge(tm_signal_annotations$transcript, by.x='row.names', by.y='ensembl_transcript_id', all.x=TRUE)
+
+names(feature_data)
+```
+Annotate the proportions
+```{r}
+proportions_annot <- proportions %>%
+  names() %>%
+  lapply(function(level){
+    proportions[[level]] %>%
+      merge(feature_data[[level]], by.x='id', by.y='Row.names') %>%
+      mutate(gene_biotype=recode(gene_biotype, 'protein_coding'='Protein coding'))
+  })
+
+names(proportions_annot) <- names(proportions)
+
+proportions_annot %>% lapply(dim)
+```
+```{r}
+saveRDS(proportions_annot, './out/proportions_annot.rds')
+```
+
+Make ternary plots for relocalisation
+```{r}
+tern_plots_dmso <- proportions_annot %>%
+  names() %>%
+  lapply(function(level){
+    
+    .data <- proportions_annot[[level]]  %>%
+      filter(condition=='DMSO') %>%
+      mutate(Nuc=Nucleolus+Nucleus,
+             Cyt=Cytosol+Granule)
+    
+    p <- .data %>%
+      ggtern(aes(x=Cyt, y=Membrane, z=Nuc)) +
+      theme_bw(base_size=15) +
+      theme_arrowlarge() +
+      theme_hidetitles() +
+      xlab('Cyt.') +
+      ylab('Mem.') +
+      zlab('Nuc.') +
+      geom_point(size=0.1, alpha=0.1) 
+    
+    print(p)
+
+    return(list('.data'=.data, 'p'=p))
+  })
+
+
+transcripts_signal_tm <- tern_plots_dmso[[2]]$p %+%
+  (filter(tern_plots_dmso[[2]]$.data, !is.na(conservative_signal_tm))) +
+  facet_wrap(~(factor(ifelse(conservative_signal_tm, 'Signal/TM', 'Other'), levels=c('Signal/TM', 'Other')))) +
+  theme(strip.background=element_blank()) +
+  aes(colour=conservative_signal_tm) +
+  scale_colour_manual(values=get_cat_palette(2), guide=FALSE)
+
+print(transcripts_signal_tm)
+ggsave('../../../../../5_manuscript_figures/Figure_3/tern/signal_tm_transcript.png', transcripts_signal_tm, width=7, height=4.5)
+ggsave('../../../../../5_manuscript_figures/Figure_3/tern/signal_tm_transcript.pdf', transcripts_signal_tm, width=7, height=4.5)
+```
+ECDF for membrane proportions
+```{r}
+p <- tern_plots_dmso[[2]]$.data %>%
+  filter(!is.na(conservative_signal_tm)) %>%
+  mutate('signal_tm'=factor(ifelse(conservative_signal_tm, 'Signal/TM', 'Other'), levels=c('Signal/TM', 'Other'))) %>%
+  ggplot(aes(Membrane, colour=signal_tm)) +
+  stat_ecdf() +
+  theme_camprot(border=FALSE, base_size=15, base_family='sans') +
+  scale_colour_manual(values=rev(get_cat_palette(2)), name='') +
+  theme(legend.position=c(1,0.1), legend.justification=c(1, 0), legend.background=element_blank()) +
+  xlab('Membrane proportion') +
+  ylab('Fraction of transcripts') +
+  scale_x_continuous(expand=c(0,0))
+   
+ggplot2:::plot.ggplot(p)
+ggplot2:::ggsave('../../../../../5_manuscript_figures/Figure_3/edcfs/signal_tm_transcript.png', p, width=4, height=3.5)
+ggplot2:::ggsave('../../../../../5_manuscript_figures/Figure_3/edcfs/signal_tm_transcript.pdf', p, width=4, height=3.5)
+```
+Ternary plots for relocalisation of all tx/genes.
+```{r}
+tern_plots <- proportions_annot %>%
+  names() %>%
+  lapply(function(level){
+    
+    .data <- proportions_annot[[level]]  %>%
+      mutate(Nuc=Nucleolus+Nucleus,
+             Cyt=Cytosol+Granule)
+    
+    p <- .data %>%
+      ggtern(aes(x=Cyt, y=Membrane, z=Nuc)) +
+      theme_bw(base_size=10) +
+      facet_wrap(~condition) +
+      xlab('Cyt.') +
+      ylab('Mem.') +
+      zlab('Nuc.') +
+      theme_arrowlarge() +
+      theme_hidetitles() +
+      theme(strip.background = element_blank(),
+            strip.text.x=element_text(size=15, vjust=2),
+            strip.text.y=element_text(size=15, vjust=2)) +
+      geom_point(size=0.1, alpha=0.1) 
+    
+    print(p)
+    ggsave(sprintf('../../../../../5_manuscript_figures/Figure_4/tern/dmso_tg_%s.png', level))
+    ggsave(sprintf('../../../../../5_manuscript_figures/Figure_4/tern/dmso_tg_%s.pdf', level))
+
+
+    return(list('.data'=.data, 'p'=p))
+  })
+
+
+
+    
+```
+
+
+

@@ -1,0 +1,339 @@
+---
+title: "Merging RNA fractions"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we take the RNA and protein sample metrics and calculate the amount of
+  each fraction to use for the merged samples
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontfamily: mathpazo
+fontsize: 11pt
+---
+
+Load required libraries.
+```{r}
+library(tidyverse)
+library(camprotR)
+```
+Read in RNA/protein metrics
+```{r}
+# Where Eneko deems the RNA quantification to be non-trustable (e.g close to limit of detection/noise),
+# replace quantification with zero
+rna_metrics <- read.delim('./RNA_metrics.txt') %>%
+      mutate(corrected_Dil_Correct=ifelse(Trustable=='N', 0, Dil_Correct),
+             final_volume=60) # final volume of RNeay elution is always 60
+
+# protein quantification values are in ug, not ng. Quantification values therefore multipled by 1000
+protein_metrics <- read.delim('./Protein_metrics.txt') %>%
+  mutate(ng_raw=1000*ng_raw, Vol_correct=1000*Vol_correct, Dil_Correct=1000*Dil_Correct)
+```
+
+```{r}
+p <- rna_metrics %>%
+  filter(Protocol=='dLoRNA') %>%
+  ggplot(aes(Fraction, Dil_Correct/1000)) +
+  geom_bar(stat='identity') +
+  theme_camprot(border=FALSE, base_size=15) +
+  facet_grid(Treatment~Replica) +
+  ylab('RNA (ug)') 
+  
+
+print(p)
+
+print(p + aes(fill=Fraction==16) + theme(legend.position='none'))
+
+
+p <- rna_metrics %>%
+  filter(Protocol=='sLoRNA') %>%
+  ggplot(aes(Fraction, Dil_Correct/1000)) +
+  geom_bar(stat='identity') +
+  theme_camprot(border=FALSE, base_size=15) +
+  facet_grid(Treatment~Replica) +
+  ylab('RNA (ug)')
+  
+
+print(p)
+
+print(p + aes(fill=Fraction==16) + theme(legend.position='none'))
+
+print(p + scale_y_log10())
+```
+
+
+```{r}
+
+p <- rna_metrics %>%
+  filter(Replica>1) %>%
+  group_by(Treatment, Protocol, Fraction) %>%
+  summarise(Dil_Correct_mean=mean(Dil_Correct), Dil_Correct_se=sd(Dil_Correct)/3) %>%
+  ggplot(aes(Fraction, Dil_Correct_mean, colour=Treatment)) +
+  geom_line(stat='identity', size=1) +
+  geom_errorbar(aes(ymin=Dil_Correct_mean-Dil_Correct_se, ymax=Dil_Correct_mean+Dil_Correct_se), width=1) +
+  theme_camprot(border=FALSE, base_size=15) +
+  facet_wrap(~Protocol, scales='free') +
+  ylab('RNA (ug)') +
+  scale_colour_manual(values=get_cat_palette(2))
+  
+
+print(p)
+```
+
+Below, we detail the merging of fractions to make the merged fractions
+```{r}
+merge_details <- list(
+  'DMSO'=list(
+    '1'=list('1'=1:8, '2'=8:9, '3'=9:12, '4'=13:14, '5'=15, '6'=16, '7'=17, '8'=18:21),
+    '2'=list('1'=1:8, '2'=8:9, '3'=9:12, '4'=13:14, '5'=15, '6'=16, '7'=17, '8'=18:21),
+    '3'=list('1'=1:8, '2'=8:9, '3'=9:12, '4'=13:14, '5'=15, '6'=16, '7'=17, '8'=18:21),
+    '4'=list('1'=1:9, '2'=9:10, '3'=10:13, '4'=14, '5'=15, '6'=16, '7'=17, '8'=18:21)),
+  'TG'=list(
+    '1'=list('1'=1:8, '2'=8:9, '3'=9:13, '4'=14:15, '5'=16, '6'=17, '7'=18, '8'=19:21),
+    '2'=list('1'=1:8, '2'=8:9, '3'=9:12, '4'=13:14, '5'=15, '6'=16, '7'=17, '8'=18:21),
+    '3'=list('1'=1:8, '2'=8:9, '3'=9:12, '4'=13:14, '5'=15, '6'=16, '7'=17, '8'=18:21),
+    '4'=list('1'=1:8, '2'=8:9, '3'=9:13, '4'=14, '5'=15, '6'=16, '7'=17, '8'=18:21)))
+
+
+```
+
+Function to calculate the proportion of each fraction which we need to use to reach 2000 ng
+```{r}
+# rna_quant - abundance (ng) in each fraction
+# total_quant_req - Total amount required (ng)
+get_proportion_required <- function(quant, total_quant_req=2000){
+  total_merged_fractions <- sum(quant)
+  proportion_required <- 1/(total_merged_fractions/total_quant_req)  
+  return(proportion_required)
+}
+
+```
+
+
+
+Function to loop through merge details nested list and identify the proportions of each fraction for merging
+```{r}
+
+
+get_merges <- function(metrics, merge_details, dil_correct_column=corrected_Dil_Correct, amount_required){
+
+  #Set up empty nested list for results
+  merging_frames <- list('DMSO'=NULL, 'TG'=NULL)
+  
+  for(condition in names(merging_frames)){
+    merging_frames[[condition]] <- list('1'=NULL, '2'=NULL ,'3'=NULL, '4'=NULL)
+    
+    for(rep in 1:4){
+      merging_frames[[condition]][[rep]] <- list('1'=NULL, '2'=NULL ,'3'=NULL, '4'=NULL,
+                                                 '5'=NULL, '6'=NULL ,'7'=NULL, '8'=NULL)
+    }
+  }
+  
+  for(treatment in names(merge_details)){
+    for(rep in 1:4){
+      
+      # extract the data for the experiment (combination of treatment and replicate)
+      data <- metrics %>% filter(Protocol=='dLoRNA', Replica==rep, Treatment==treatment) 
+  
+      # get the fraction merging details
+      merge_fractions <- merge_details[[treatment]][[rep]]
+      
+      # for each merge fraction
+      for(merge_ix in seq_along(merge_fractions)){
+        
+        # identify the fractions to be merged
+        merge_fraction <- merge_fractions[[merge_ix]]
+        
+        # subset to fractions to be merged
+        data_merge_fractions <- data %>%
+          filter(Fraction %in% merge_fraction) %>%
+          arrange(Fraction)
+        
+        per_fraction <- data_merge_fractions %>%
+          pull(!!sym(dil_correct_column))
+        
+        # What proportion of the fractions is required
+        proportion_required <- get_proportion_required(per_fraction, amount_required)
+        
+        # get the dilution factors for the fractions
+        dilution_factors <- data_merge_fractions %>%
+          pull(Dil_factor)
+        
+        # calculate how much RNA is coming from each fraction
+        used <- per_fraction  * proportion_required
+        
+        # Given the dilution factors, how much of the extracted fraction is required
+        proportion_extracted <- proportion_required * dilution_factors
+        
+        final_volume <-  data_merge_fractions %>%
+          pull(final_volume)
+        
+        # Multiply by the RNease elution volume
+        volume <- proportion_extracted * final_volume 
+        
+        # Format results into data.frame and assign to nested list of results
+        merging_frames[[treatment]][[rep]][[merge_ix]] <- data.frame(
+          'treatment'=treatment,
+          'replicate'=rep,
+          'merge_fraction'=merge_ix,
+          'fraction'=merge_fraction,
+          'per_fraction_ng'=per_fraction,
+          'proportion_initial_fraction'=proportion_required,
+          'used_ng'=used,
+          'proportion_extracted_fraction'=proportion_extracted, 
+          'volume_ul'=volume)
+      }
+    }
+  }
+  
+  # Convert nested list into a single data.frame
+  fraction_amounts <- bind_rows(lapply(merging_frames,
+         function(x1) bind_rows(lapply(
+           x1, function(x2) do.call(rbind, x2)))))
+  
+  # remove row.names
+  rownames(fraction_amounts) <- NULL
+  
+  return(fraction_amounts)
+}
+
+```
+
+Get RNA merges. We want 2ug for each merged fraction to give us 1ug for rRNA depletion, and another 1ug as backup in case of failure at some point in the library preparation.
+```{r}
+rna_merges <- get_merges(rna_metrics, merge_details, 'corrected_Dil_Correct', amount_required=2000)
+```
+
+Let's just check how much of each fraction we will use to make sure it's never over the total 60 ul we have available (minus 2 ul for RNA quant)
+```{r}
+rna_merges %>%
+  group_by(treatment, replicate, fraction) %>%
+  summarise(total_volume_required=sum(volume_ul)) %>%
+  arrange(desc(total_volume_required)) %>% head()
+```
+
+Hmmm, OK, so for replicate 3, fraction 15 we want to use 99 ul TG & 58 ul DMSO samples, respectively. Let's just check why this is.
+```{r}
+print(rna_merges %>% filter(replicate==3, fraction==15))
+print(rna_metrics %>% filter(Replica==3, Fraction==15))
+```
+OK, so for both treatments, this fraction is only required for a single merged fraction (merge fraction 5), but there are no other fractions contributing to this merged fraction. The 'Vol_correct' amount of RNA (e.g how much was actually extracted from the fraction) was only 1212 & 2055 ng for TG & DMSO, respectively. If we want to use this replicate, we may need to just take e.g 500ng & 1ug from the TG, DMSO samples, respectively, for rRNA depletion and if we need a backup we should have > 500ng remaining. 
+
+
+Write out the RNA proportions
+```{r}
+write.table(rna_merges, './RNA_proportions_used.tsv', sep='\t', row.names=FALSE, quote=FALSE)
+```
+
+Next, we identify the merges required for the protein samples
+```{r}
+protein_merges <- get_merges(protein_metrics, merge_details, 'Dil_Correct', amount_required=220000)
+
+```
+
+Visualise the amount of protein per fraction. Horizontal line is the amount of protein we want for each merged fraction
+```{r}
+p <- protein_metrics %>%
+  filter(Protocol=='dLoRNA') %>%
+  ggplot(aes(Fraction, Dil_Correct/1000)) +
+  geom_bar(stat='identity') +
+  theme_camprot(border=FALSE, base_size=15) +
+  facet_grid(Treatment~Replica) +
+  ylab('Protein (ng)') +
+  geom_hline(yintercept=150, linetype=2, colour='grey')
+
+print(p)
+
+print(p + scale_y_log10())
+```
+
+Below, we check that we have enough of each fraction for the suggested merging
+```{r}
+protein_volumes <- protein_metrics %>% filter(Protocol=='dLoRNA') %>%
+  select(Fraction, Treatment, Replica, final_volume)
+
+protein_merges %>%
+  group_by(treatment, replicate, fraction) %>%
+  summarise(total_volume_required=sum(volume_ul)) %>%
+  merge(protein_volumes,
+        by.x=c('fraction', 'treatment', 'replicate'),
+        by.y=c('Fraction', 'Treatment', 'Replica')) %>%
+  mutate(frac_final_volume_used=total_volume_required/final_volume) %>%
+  arrange(desc(frac_final_volume_used)) %>%
+  head()
+```
+Write out the protein proportions
+```{r}
+write.table(protein_merges, './Protein_proportions_used.tsv', sep='\t', row.names=FALSE, quote=FALSE)
+```
+
+
+What about if we merged by a different schema where we only ever use each fraction once.
+```{r}
+merge_details2 <- list(
+  'DMSO'=list(
+    '1'=list('1'=1:7, '2'=8:9, '3'=10:12, '4'=13:14, '5'=15, '6'=16, '7'=17, '8'=18:21),
+    '2'=list('1'=1:7, '2'=8:9, '3'=10:12, '4'=13:14, '5'=15, '6'=16, '7'=17, '8'=18:21),
+    '3'=list('1'=1:7, '2'=8:9, '3'=10:12, '4'=13:14, '5'=15, '6'=16, '7'=17, '8'=18:21),
+    '4'=list('1'=1:8, '2'=9:10, '3'=11:13, '4'=14, '5'=15, '6'=16, '7'=17, '8'=18:21)),
+  'TG'=list(
+    '1'=list('1'=1:7, '2'=8:9, '3'=10:13, '4'=14:15, '5'=16, '6'=17, '7'=18, '8'=19:21),
+    '2'=list('1'=1:7, '2'=8:9, '3'=10:12, '4'=13:14, '5'=15, '6'=16, '7'=17, '8'=18:21),
+    '3'=list('1'=1:7, '2'=8:9, '3'=10:12, '4'=13:14, '5'=15, '6'=16, '7'=17, '8'=18:21),
+    '4'=list('1'=1:7, '2'=8:9, '3'=10:13, '4'=14, '5'=15, '6'=16, '7'=17, '8'=18:21)))
+
+```
+
+Write out the alternative protein proportions.
+```{r}
+protein_merges_each_frac_once <- get_merges(protein_metrics, merge_details2, 'Dil_Correct', amount_required=220000)
+write.table(protein_merges_each_frac_once, './Protein_proportions_used_each_fraction_once.tsv',
+            sep='\t', row.names=FALSE, quote=FALSE)
+```
+
+Below, we check that we have enough of each fraction for the suggested merging with each fraction only ever used in one merge
+```{r}
+protein_merges_each_frac_once %>%
+  group_by(treatment, replicate, fraction) %>%
+  summarise(total_volume_required=sum(volume_ul)) %>%
+  merge(protein_volumes,
+        by.x=c('fraction', 'treatment', 'replicate'),
+        by.y=c('Fraction', 'Treatment', 'Replica')) %>%
+  mutate(frac_final_volume_used=total_volume_required/final_volume) %>%
+  arrange(desc(frac_final_volume_used)) %>%
+  head()
+```
+
+And what about replicate 4, since we've already used some of this material
+```{r}
+protein_merges_each_frac_once %>%
+  filter(replicate==4) %>%
+  group_by(treatment, replicate, fraction) %>%
+  summarise(total_volume_required=sum(volume_ul)) %>%
+  merge(protein_volumes,
+        by.x=c('fraction', 'treatment', 'replicate'),
+        by.y=c('Fraction', 'Treatment', 'Replica')) %>%
+  mutate(frac_final_volume_used=total_volume_required/final_volume) %>%
+  arrange(desc(frac_final_volume_used)) %>%
+  head()
+```
+
+```{r}
+p <- protein_metrics %>%
+  filter(Protocol=='dLoRNA') %>%
+  ggplot(aes(Fraction, Dil_Correct/1000)) +
+  geom_bar(stat='identity') +
+  theme_camprot(border=FALSE, base_size=15) +
+  facet_grid(Treatment~Replica) +
+  ylab('Protein (ng)') +
+  geom_hline(yintercept=150, linetype=2, colour='grey')
+
+print(p)
+
+print(p + scale_y_log10())
+```
+
+

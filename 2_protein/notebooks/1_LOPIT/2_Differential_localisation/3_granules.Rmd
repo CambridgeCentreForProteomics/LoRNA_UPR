@@ -1,0 +1,242 @@
+---
+title: "Proteins in granules"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we explore the potential granule-localised proteins
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+
+```{r}
+library(MSnbase)
+library(pRoloc)
+library(pRolocExt)
+library(tidyverse)
+library(camprotR)
+library(biobroom)
+
+source('../plot_foi.R')
+
+colours <- readRDS('../../../../6_shiny_app/out/shiny_colours.rds')$Protein
+```
+
+Read in BANDLE results and fully annotated LOPIT data
+```{r}
+diff_loc <- readRDS('../../out/bandle_diff_loc_all_unique.rds')
+
+combined_protein_res_inc_bandle <- readRDS('../../out/combined_protein_res_inc_bandle_loc.rds')
+
+```
+
+Just looking at the profile for ZNF622
+```{r}
+marker_profiles <- combined_protein_res_inc_bandle %>% names() %>%
+  lapply(function(name){
+    mrkConsProfiles(combined_protein_res_inc_bandle[[name]])[c('ER', 'RIBOSOME'),] %>%
+      data.frame() %>%
+      tibble::rownames_to_column('markers') %>%
+      pivot_longer(cols=-markers, names_to='sample') %>%
+      mutate(sample=remove_x(sample)) %>%
+      mutate(condition=name) %>%
+      merge(pData(combined_protein_res_inc_bandle[[name]])[,c('fraction', 'replicate')],
+            by.x='sample', by.y='row.names')
+  }) %>% bind_rows() %>%
+  mutate(markers=update_loc_names(markers))
+
+foi_profile <- combined_protein_res_inc_bandle %>%
+  lapply(function(x) tidy(x['Q969S3',], addPheno=TRUE)) %>%
+  bind_rows() %>%
+  mutate(markers='ZNF622')
+
+
+p <- bind_rows(foi_profile, marker_profiles) %>%
+  mutate(condition=recode(condition, 'Thapsigargin'='UPR')) %>%
+  ggplot(aes(fraction, value, group=interaction(replicate, markers), colour=markers)) +
+  geom_line(size=1) +
+  facet_grid(condition~(paste0('Replicate ', replicate))) +
+  scale_x_continuous(breaks=1:8, name='Fraction') +
+  theme_camprot(base_size=15, base_family='sans', border=FALSE) +
+  scale_colour_manual(values=c(colours[c('ER', 'RIBOSOME')], get_cat_palette(7)[7]), name='') +
+  theme(strip.background=element_blank()) +
+  xlab('Fraction') +
+  ylab('Abundance (sum norm.)')
+
+print(p)
+ggsave('../../../../5_manuscript_figures/Figure_5/model/znf622.png', width=7, height=3.5)
+ggsave('../../../../5_manuscript_figures/Figure_5/model/znf622.pdf', width=7, height=3.5)
+
+
+    
+
+```
+ZNF622 and CAMK2D
+```{r}
+foi_for_validation <- c('Q969S3', 'Q13557')
+compare_profiles(foi_for_validation)
+
+diff_loc %>% filter(protein %in% foi_for_validation)
+```
+
+Now, onto the proteins moving away from the ribosome.
+```{r}
+bandle_from_ribosome <- diff_loc %>%
+  filter(bandle.allocation.dmso.minimal=='RIBOSOME', level!='Candidate')
+
+print(bandle_from_ribosome)
+
+compare_profiles(bandle_from_ribosome$protein)
+
+plot_fois(as.character(bandle_from_ribosome$protein), foi_name='Away from ribosome', feature_col='bandle_alloc',
+          moi=c('Cytosol', 'Ribosome', 'ER', 'Nucleus', 'Protein Complex'), plot_tsne=TRUE, unknown_desc='Undefined')
+
+
+```
+
+PABPC1, PABPC4, UPF1 & STAU2 seem quite likely to be moving to a Stress Granule (SG) profile given a) They are associated with ribosomes when translation is active, b) most are known to be associated with SG upon stress & c) they increase in abundance in the fractions indicative of granules in the LoRNA data (fraction 5 & 6).
+
+Whereas, MAGEB2 & PA2G4 seem to move towards cytosol if anything.
+
+PA2G4 - regulates cap-independent IRES-mediated translation
+
+Can we identify further proteins which are similarly localised in Tg by just using correlation with the above.
+
+```{r}
+potential_sg_markers <- bandle_from_ribosome %>% filter(grepl('(PABP|UPF1|STAU2)', `GENES`)) %>% pull(protein)
+
+p <- compare_profiles(potential_sg_markers)
+print(p)
+
+ggsave('../../../../5_manuscript_figures/Figure_4/granules/bandle_reloc.png', width=5, height=5)
+ggsave('../../../../5_manuscript_figures/Figure_4/granules/bandle_reloc.pdf', width=5, height=5)
+
+plot_fois(potential_sg_markers, foi_name='PABPC1/4, UPF1, STAU2', feature_col='bandle_alloc',
+          moi=c('Cytosol', 'Nucleus', 'Ribosome'), plot_tsne=TRUE, unknown_desc='Undefined', )
+
+```
+
+
+
+```{r}
+plot_tsne(combined_protein_res_inc_bandle$DMSO, 'markers')
+plot_tsne(combined_protein_res_inc_bandle$Thapsigargin, 'markers')
+plot_tsne(combined_protein_res_inc_bandle$DMSO, 'bandle_alloc', unknown='Undefined')
+plot_tsne(combined_protein_res_inc_bandle$Thapsigargin, 'bandle_alloc', unknown='Undefined')
+```
+
+```{r}
+plot_tsne(combined_protein_res_inc_bandle$DMSO, 'markers', foi=potential_sg_markers)
+plot_tsne(combined_protein_res_inc_bandle$Thapsigargin, 'markers', foi=potential_sg_markers)
+plot_tsne(combined_protein_res_inc_bandle$DMSO, 'bandle_alloc', foi=potential_sg_markers, unknown='Undefined')
+plot_tsne(combined_protein_res_inc_bandle$Thapsigargin, 'bandle_alloc', foi=potential_sg_markers, unknown='Undefined')
+```
+Calculate all vs all correlations and then identify potential new SG proteins as those top 1% most highly correlated with our 4 proteins, plus correlation > 0.35 greater than correlation with ribosomes.
+```{r}
+all_cor <- combined_protein_res_inc_bandle[[2]] %>% exprs() %>% t() %>% cor(method='pearson')
+
+wh <- which(rownames(all_cor) %in% potential_sg_markers)
+
+mean_cor_with_potential_sg <- all_cor[,wh] %>% rowMeans()
+
+
+
+mean_cor_with_potential_sg[wh]
+
+mean_cor_with_ribosome <- all_cor[,which(getMarkers(combined_protein_res_inc_bandle[[2]])=='RIBOSOME')] %>% rowMeans()
+
+hist(mean_cor_with_potential_sg)
+hist(mean_cor_with_potential_sg-mean_cor_with_ribosome)
+summary(mean_cor_with_potential_sg-mean_cor_with_ribosome)
+
+potential_new_sg <- names(mean_cor_with_potential_sg)[
+  ((mean_cor_with_potential_sg-mean_cor_with_ribosome)>0.35 &
+     mean_cor_with_potential_sg > quantile(mean_cor_with_potential_sg, 0.99))] %>% 
+  setdiff(potential_sg_markers)
+
+
+```
+Looking at localisation of thse potential SG proteins.
+```{r}
+plot_fois(potential_new_sg, foi_name='Potential SG',
+          moi=c('CYTOSOL', 'RIBOSOME', 'ER', 'NUCLEUS', 'PROTEIN COMPLEX'),
+          feature_col='bandle_alloc',
+          plot_tsne=TRUE, unknown_desc='Undefined')
+
+```
+What are the 22 potential new SG proteins...
+
+```{r}
+
+fData(combined_protein_res_inc_bandle$Thapsigargin)[potential_new_sg,174:182]
+```
+
+
+
+
+Profiles for all 22 proteins
+```{r, fig.height=8, fig.width=8}
+compare_profiles(potential_new_sg) + facet_wrap(~name, ncol=6)
+```
+
+
+OK, let's note down what we think about the above 22 proteins
+
+*Confident RNA granule proteins (PB and/or SG) = 10 proteins*
+
+CASC3 (https://www.uniprot.org/uniprot/O15234) - Recruited to SG (https://pubmed.ncbi.nlm.nih.gov/17652158/)
+
+CNOT1,2,3,6L,9 - Part of CCR4-NOT complex which is known to be localised to RNP granules (e.g https://www.ncbi.nlm.nih.gov/pmc/articles/PMC3376659/)
+
+DCP1A, B (https://www.uniprot.org/uniprot/Q9NPI6; https://www.uniprot.org/uniprot/Q8IZD4) - Necessary for the degradation of mRNAs, both in normal mRNA turnover and in nonsense-mediated mRNA decay. Removes the 7-methyl guanine cap structure from mRNA molecules, yielding a 5'-phosphorylated mRNA fragment and 7m-GDP. Contributes to the transactivation of target genes after stimulation by TGFB1. PB localised
+
+SECISBP2 (https://www.uniprot.org/uniprot/Q96T21) - Binds to the SECIS element in the 3'-UTR of some mRNAs encoding selenoproteins. Binding is stimulated by SELB. Found in SG (https://en.wikipedia.org/wiki/Stress_granule, inc Youn et al)
+
+YBX3 https://www.uniprot.org/uniprot/P16989 YBX1 - Promotes mRNA stabilization: acts by binding to m5C-containing mRNAs and recruiting the mRNA stability maintainer ELAVL1, thereby preventing mRNA decay. Both YBX1 & 3 are often found in SG (https://en.wikipedia.org/wiki/Stress_granule, inc Youn et al for YBX3). 
+
+*Plausible though undetected = 2 proteins*
+
+CAMK2D (https://www.uniprot.org/uniprot/Q13557) - Calcium/calmodulin-dependent protein kinase involved in the regulation of Ca2+ homeostatis!! Seems to be sarcoplasmic reticulum more than ER localised. CAMK2 has been implicated in RNP decondensation (https://elifesciences.org/articles/65742) so this is at least plausible granule localised
+
+RANB9 (https://www.uniprot.org/uniprot/Q96S59) - Inhibits FMR1 binding to RNA (https://pubmed.ncbi.nlm.nih.gov/15381419/) and other RAN binding proteins are found in SG (https://en.wikipedia.org/wiki/Stress_granule) so plausible if not already known
+
+
+CAMK2D & RANB9 are worth reading into more!
+
+*Implausible = 10 proteins*
+
+GIT1/2 (https://www.uniprot.org/uniprot/Q9Y2X7; https://www.uniprot.org/uniprot/Q14161) - Seems to localised in focal adhesions
+
+HAUS3 (https://www.uniprot.org/uniprot/Q68CZ6) - Contributes to mitotic spindle assembly, maintenance of centrosome integrity and completion of cytokinesis as part of the HAUS augmin-like complex.
+
+MKLN1 (https://www.uniprot.org/uniprot/Q9UL63) - Component of the CTLH E3 ubiquitin-protein ligase complex that selectively accepts ubiquitin from UBE2H and mediates ubiquitination and subsequent proteasomal degradation of the transcription factor HBP1
+
+
+PRPS2 & PRPSAP1 (https://www.uniprot.org/uniprot/P11908; https://www.uniprot.org/uniprot/Q14558) - Catalyzes the synthesis of phosphoribosylpyrophosphate (PRPP) that is essential for nucleotide synthesis; Seems to play a negative regulatory role in 5-phosphoribose 1-diphosphate synthesis.
+
+RMND5A (https://www.uniprot.org/uniprot/Q9H871) - Core component of the CTLH E3 ubiquitin-protein ligase 
+
+RNF213 (https://www.uniprot.org/uniprot/Q63HN8) - E3 ubiquitin-protein ligase involved in angiogenesis. Other RNFs (214, 219, 25) have been detected in SGs before (https://en.wikipedia.org/wiki/Stress_granule)
+
+
+SEPTIN6/8 (https://www.uniprot.org/uniprot/Q14141; https://www.uniprot.org/uniprot/Q92599) - Filament-forming cytoskeletal GTPases. Required for normal organization of the actin cytoskeleton. 
+
+
+Explaining the above:
+
+- I can't find any convincing link between FA and PB/SG
+
+- Lots of ubiquitin-related proteins have been observed in SG before, including ubiquitin-protein ligasess (https://en.wikipedia.org/wiki/Stress_granule; DTL, DTX3L, TRIM21, TRIM25, TRIM56, TRIM71, UBB & UBL5). However, ubiquitination is dispensable to SG formation and dissolution: https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6508666/
+
+
+
+My interpretation:  RMND5A may be worth following up but the others look likely to be FPs.
+
+
+
+10/22 proteins being strongly P-body/SG does suggest we may be resolving macromolecular content of the granule in our density gradient!

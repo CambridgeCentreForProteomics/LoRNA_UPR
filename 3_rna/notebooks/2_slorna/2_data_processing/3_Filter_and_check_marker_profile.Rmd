@@ -1,0 +1,278 @@
+---
+title: "Inspect the marker set separation"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we filter the visually inspect the marker set separation using linear profile plots and PCA.
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+```{r}
+library(tidyverse)
+library(camprotR)
+library(pRoloc)
+library(pRolocdata)
+library(pRolocExt)
+library(biobroom)
+library(naniar)
+
+colours <- get_cat_palette(6)[c(2:3,1,6:4)]
+```
+
+Read in gene-level data
+```{r}
+gene_quant_res <- readRDS("./out/gene_quant_lorna_res.rds")
+
+gene_quant_corrected_res <- readRDS("./out/gene_quant_fractions_sirv_corrected.rds")
+
+# for size bias, consider fractions 2,3,4,5,7,8. Note that 'fraction' 1 is actually a total sample
+gene_quant_size_bias_res <- gene_quant_res[,pData(gene_quant_res)$fraction_n %in% c(2:5, 7:8)]
+gene_quant_corrected_size_bias_res <- gene_quant_corrected_res[,pData(gene_quant_corrected_res)$fraction_n %in% c(2:5, 7:8)]
+
+# for proper sLoRNA, just consider the first 5 fractions. Note that 'fraction' 1 is actually a total sample
+gene_quant_res <- gene_quant_res[,pData(gene_quant_res)$fraction_n %in% 2:6]
+gene_quant_corrected_res <- gene_quant_corrected_res[,pData(gene_quant_corrected_res)$fraction_n %in% 2:6]
+
+
+print(dim(gene_quant_size_bias_res))
+print(dim(gene_quant_res))
+
+print(dim(gene_quant_corrected_size_bias_res))
+print(dim(gene_quant_corrected_res))
+
+```
+
+Checking missing values and settle on thresholds for min expression 
+```{r}
+
+x <- gene_quant_res
+pData(x)$sample <- NULL
+
+gene_quant_long <- tidy(x, addPheno=TRUE) %>%
+  merge(fData(x)[,'gene_biotype',drop=FALSE], by.x='protein', by.y='row.names')
+
+rm(x)
+colnames(gene_quant_long)[c(1, 7)] <- c('gene', 'CPM')
+
+head(gene_quant_long)
+```
+
+```{r, fig.height=10, fig.width=10}
+
+gene_quant_long %>%
+  ggplot(aes(log2(CPM),
+             group=interaction(gene_biotype, fraction_n),
+             colour=gene_biotype)) +
+  geom_density() +
+  facet_grid(gene_biotype~replicate) +
+  theme_camprot(base_size=15) +
+  theme(legend.position='none') +
+  geom_vline(xintercept=log2(1), colour='grey', linetype=2)
+```
+OK, so CPM 1 seems to be approximately the point between the two distributions of protein_coding genes. Note that lncRNA are largely below this point.
+
+Next, we consider the missing values
+
+```{r}
+
+gene_quant_mean_threshed <- gene_quant_res[rowMeans(exprs(gene_quant_res))>1,]
+
+gene_quant_mean_threshed_quant_exprs <- data.frame(exprs(gene_quant_mean_threshed))
+
+gene_quant_mean_threshed_quant_exprs[gene_quant_mean_threshed_quant_exprs==0] <- NA
+
+dim(gene_quant_mean_threshed_quant_exprs)
+sum(!is.na(gene_quant_mean_threshed_quant_exprs))
+sum(is.na(gene_quant_mean_threshed_quant_exprs))
+```
+
+```{r}
+
+
+
+p <- naniar::gg_miss_upset(gene_quant_mean_threshed_quant_exprs, nsets=10, nintersects=20,
+                           sets=rev(paste0(colnames(gene_quant_mean_threshed_quant_exprs), '_NA')),
+                           keep.order=TRUE)
+print(p)
+
+for(r in unique(pData(gene_quant_mean_threshed)$replicate)){
+  
+  gene_quant_exprs <- data.frame(exprs(gene_quant_mean_threshed[,                                                                        pData(gene_quant_mean_threshed)$replicate==r]))
+
+  gene_quant_exprs[gene_quant_exprs==0] <- NA
+
+  p <- naniar::gg_miss_upset(gene_quant_exprs, nsets=10, nintersects=20,
+                             sets=rev(paste0(colnames(gene_quant_exprs), '_NA')),
+                             keep.order=TRUE)
+  print(p)
+}
+
+```
+
+```{r}
+pData(gene_quant_mean_threshed)$sample <- NULL
+zero_counts <- gene_quant_mean_threshed %>%
+  tidy(addPheno=TRUE) %>%
+  group_by(replicate, protein) %>%
+  summarise(zeros=sum(value==0)) %>%
+  group_by(replicate, zeros) %>%
+  tally()
+
+zero_counts %>%
+  filter(zeros>0) %>%
+  ggplot(aes(zeros, n)) +
+  geom_bar(stat='identity') +
+  facet_wrap(~replicate) + theme_camprot()
+
+```
+OK, so if we remove genes with average CPM < 1, within each replicate, the most frequent pattern for zero abundance is one or two fraction. 
+
+We will use a threshold of mean abundance > 1 CPM and present in at least 4/5 fractions
+
+```{r}
+uncorrected_datasets <- list('gene' = gene_quant_res, 'gene_size_bias'=gene_quant_size_bias_res)
+corrected_datasets <- list('gene' = gene_quant_corrected_res, 'gene_size_bias'=gene_quant_corrected_size_bias_res)
+
+#filter the uncorrected datasets
+uncorrected_datasets <- uncorrected_datasets %>% lapply(function(quant){
+
+    quant <- quant[(rowMeans(exprs(quant))> 1 & rowMeans(exprs(quant)!=0) >= 4/5),]
+      
+    quant <- quant %>%
+      filterNA()
+
+    # row sum normalise per replicate 
+    for(rep in unique(pData(quant)$replicate)){
+      rep_match <- pData(quant)$replicate==rep
+      
+      unnorm <- exprs(quant)[,rep_match]
+      
+      norm <- t(apply(unnorm, 1, function(x){
+        
+        norm_x <- x/sum(x, na.rm=TRUE)
+        norm_x[x==0] <- 0
+        return(norm_x)
+        }))
+      
+      exprs(quant)[,rep_match] <- norm
+      }
+    
+    return(quant)
+    })
+
+
+all_datasets <- uncorrected_datasets
+
+
+
+
+# subset the corrected datasets to the features retained in the uncorrected dataset filtering
+for(level in names(uncorrected_datasets)){
+    
+    uncorrected_quant <- uncorrected_datasets[[level]]
+
+    all_datasets[[level]]<- list('vector', length=2)
+    names(all_datasets[[level]]) <- c('uncorrected', 'corrected')
+    
+    all_datasets[[level]][['uncorrected']] <- uncorrected_quant
+    
+    corrected_quant <- corrected_datasets[[level]]
+    
+    corrected_quant <- corrected_quant[rownames(uncorrected_quant),]
+    
+    # per-replicate sum-normalisation
+    for(rep in unique(pData(corrected_quant)$replicate)){
+      rep_match <- pData(corrected_quant)$replicate==rep
+      
+      unnorm <- exprs(corrected_quant)[,rep_match]
+      
+      norm <- t(apply(unnorm, 1, function(x){
+        
+        norm_x <- x/sum(x, na.rm=TRUE)
+        norm_x[x==0] <- 0
+        return(norm_x)
+        }))
+      
+      exprs(corrected_quant)[,rep_match] <- norm
+    }
+
+    print(dim(uncorrected_quant))          
+    print(dim(corrected_quant))          
+    
+    all_datasets[[level]][['corrected']] <- corrected_quant
+}
+
+
+```
+Set granule markers as unknown localisation
+```{r}
+all_datasets_final <- all_datasets %>% lapply(function(x){
+  x %>% lapply(function(y){
+    fData(y)$markers_inc_granules <- fData(y)$markers
+    fData(y)$markers[fData(y)$markers=='Granule'] <- 'unknown'
+    return(y)
+  })
+})
+```
+
+
+```{r}
+
+colours_no_granule <- colours[c(1,3:5)]
+to_plot <- all_datasets_final$gene$uncorrected
+
+p <- mrkConsProfiles(to_plot, fcol='markers') %>%
+  data.frame() %>%
+  tibble::rownames_to_column('markers') %>%
+  pivot_longer(cols=-markers, names_to='sample', values_to='abundance') %>%
+  merge(pData(to_plot), by='sample') %>%
+  ggplot(aes(factor(fraction, levels=unique(pData(to_plot)$fraction)),
+             abundance, colour=markers, group=interaction(markers, replicate))) +
+  geom_line() +
+  theme_camprot(border=FALSE) +
+  scale_colour_manual(values=colours_no_granule, name='') +
+  xlab('') +
+  ylab('Abundance (sum norm.)') +
+  theme(legend.position=c(0.8,0.9))
+
+ggsave('../../../../5_manuscript_figures/Figure_2/dc_profiles/linear.png', width=6, height=2)
+ggsave('../../../../5_manuscript_figures/Figure_2/dc_profiles/linear.pdf', width=6, height=2)
+
+p <- mrkConsProfiles(to_plot, fcol='markers_inc_granules') %>%
+  data.frame() %>%
+  tibble::rownames_to_column('markers') %>%
+  mutate(markers=recode(markers, 'Granule'='Cytosol-Light')) %>%
+  pivot_longer(cols=-markers, names_to='sample', values_to='abundance') %>%
+  merge(pData(to_plot), by='sample') %>%
+  ggplot(aes(factor(fraction, levels=unique(pData(to_plot)$fraction)),
+             abundance, colour=markers, group=interaction(markers, replicate))) +
+  geom_line() +
+  theme_camprot(border=FALSE, base_size=15, base_family='sans') +
+  scale_colour_manual(values=colours, name='') +
+  xlab('') +
+  ylab('Abundance\n(sum norm.)') +
+  scale_x_discrete(expand=c(0.025,0.025)) +
+  theme(aspect.ratio=0.5)
+
+print(p)
+
+
+
+
+
+```
+
+
+
+```{r}
+saveRDS(all_datasets_final, './out/all_datasets.rds')
+```
+
+
+

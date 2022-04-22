@@ -1,0 +1,348 @@
+---
+title: "Isoform localisation"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here,we identify examples of transcript isoforms with differential localisation or differential relocalisation
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+```{r}
+library(tidyverse)
+library(camprotR)
+library(biomaRt)
+library(pRoloc)
+library(ggtern) # note this means plotting non ternary ggplots using using ggplot2:::plot.ggplot(p)
+```
+
+Read in proportions
+```{r}
+proportions_gene <- readRDS('../4_proportional_localisation/results/proportions.rds')$gene
+proportions <- readRDS('../4_proportional_localisation/results/proportions.rds')$transcript
+
+proportions_dmso <- proportions %>% filter(condition=='DMSO')
+
+proportions_tg <- proportions %>% filter(condition=='Tg')
+```
+
+```{r}
+proportions_all_reps <- readRDS('../4_proportional_localisation/results/proportions_per_rep.rds')$transcript
+```
+
+```{r}
+ensembl <- biomaRt::useEnsembl('ensembl', version=102, dataset='hsapiens_gene_ensembl')
+x <-listAttributes(ensembl)
+x %>% filter(grepl('seq', description, ignore.case=TRUE))
+transcript2biotype <- getBM(attributes=c('transcript_biotype', 'ensembl_transcript_id', 'ensembl_gene_id', 'external_transcript_name'), mart=ensembl)
+
+
+head(transcript2biotype)
+```
+
+Subset to tx from genes with multiple isoforms
+```{r}
+proportions_dmso_multiple_isoforms <- proportions_dmso %>%
+  merge(transcript2biotype, by.x='id', by.y='ensembl_transcript_id') %>%
+  filter(transcript_biotype=='protein_coding') %>%
+  filter((duplicated(ensembl_gene_id)|duplicated(ensembl_gene_id, fromLast=TRUE)))
+
+proportions_tg_multiple_isoforms <- proportions_tg %>%
+  merge(transcript2biotype, by.x='id', by.y='ensembl_transcript_id') %>%
+  filter(transcript_biotype=='protein_coding') %>%
+  filter((duplicated(ensembl_gene_id)|duplicated(ensembl_gene_id, fromLast=TRUE)))
+
+```
+
+Find the genes with the biggest difference in granule proportions in DMSO
+```{r}
+isoform_specific_granule_loc <- proportions_dmso %>%
+  merge(transcript2biotype, by.x='id', by.y='ensembl_transcript_id') %>%
+  filter(transcript_biotype=='protein_coding', sd_Granule<0.1) %>%
+  filter((duplicated(ensembl_gene_id)|duplicated(ensembl_gene_id, fromLast=TRUE))) %>%
+  group_by(ensembl_gene_id) %>%
+  summarise(range_gra=max(Granule)-min(Granule)) %>%
+  arrange(desc(range_gra))
+```
+
+Find the genes with the biggest difference in nucleus proportions in DMSO
+```{r}
+isoform_specific_nuc_loc <- proportions_dmso_multiple_isoforms %>%
+  mutate(Nuc=Nucleus+Nucleolus) %>%
+  group_by(ensembl_gene_id) %>%
+  summarise(range_nuc=max(Nuc)-min(Nuc)) %>%
+  arrange(desc(range_nuc))
+```
+
+Find the genes with the biggest difference in membrane proportions in DMSO
+```{r}
+isoform_specific_mem_loc <- proportions_dmso_multiple_isoforms %>%
+  group_by(ensembl_gene_id) %>%
+  summarise(range_mem=max(Membrane)-min(Membrane)) %>%
+  arrange(desc(range_mem))
+```
+
+Read in the quant data
+```{r}
+lorna_obj <- readRDS('../4_proportional_localisation/results/all_datasets_final.rds')
+
+lorna_dmso_tx <- lorna_obj$transcript$DMSO
+lorna_tg_tx <- lorna_obj$transcript$Tg
+#readRDS('../3_clustering/out/tg_with_tsne_tx.rds')
+```
+
+
+
+```{r}
+library(ensembldb)
+library(AnnotationHub)
+library(Gviz)
+
+# use line below to reforce hub download
+#refreshHub(hubClass="AnnotationHub")
+hub <- AnnotationHub()
+
+# 102 is not in this version
+query(hub, c("EnsDb", "sapiens", "101"))
+ensdb <- hub[['AH83216']]
+
+filter <- dplyr::filter
+```
+
+Function for transcript tracks
+```{r}
+#tx_foi must be a named list. Names=ensembl_transcript_ids, values=transcript_names
+plot_tx_models <- function(tx_foi, just_gene_models=FALSE){
+  
+  txs <- getGeneRegionTrackForGviz(ensdb, filter = ~ tx_id %in% names(tx_foi))
+  
+  contig <- paste0('chr', as.character(txs@seqnames)[[1]])
+  
+  ideo_track <- IdeogramTrack(genome = "hg38", chromosome = contig)
+  ## - Genome axis
+  gaxis_track <- GenomeAxisTrack()
+  ## - Transcripts
+  txs@elementMetadata$symbol <- tx_foi[txs@elementMetadata$transcript]
+  gene_track <- GeneRegionTrack(txs,
+                                gene=txs@elementMetadata$transcript,
+                                showId = TRUE,
+                                #just.group = "right",
+                                geneSymbol = FALSE,
+                                fontsize = 20,
+                                name='Tx models')
+  ?GeneRegionTrack
+  ## Generate the plot
+  if(just_gene_models){
+    p <- plotTracks(list(gene_track))
+  } else{
+    p <- plotTracks(list(ideo_track, gaxis_track, gene_track))
+  }
+  
+  return(p)
+}
+```
+
+
+
+
+Function to plot PCA for transcripts
+```{r}
+plot_tx_pca <- function(tx_foi){
+  .pca <- plot2D(lorna_obj$transcript$DMSO$corrected, addLegend='topright')
+  highlightOnPlot(.pca, tx_foi)
+  
+  .pca <- plot2D(lorna_obj$transcript$Tg$corrected, addLegend='topleft')
+  highlightOnPlot(.pca, tx_foi)
+}
+```
+
+
+Plots for top genes with clearest difference between transcripts
+```{r}
+for(gene_id in head(isoform_specific_nuc_loc$ensembl_gene_id, 20)){
+  
+  tx <- proportions_dmso_multiple_isoforms %>% filter(ensembl_gene_id==gene_id)
+  
+  tx_foi <- tx$external_transcript_name
+  names(tx_foi) <- tx$id
+  
+  plot_tx_models(tx_foi)
+  
+  .data_gene <- proportions_gene %>%
+    filter(id == tx$ensembl_gene_id[[1]]) %>%
+    filter(condition=='DMSO') %>%
+    mutate(Nuc=Nucleolus+Nucleus,
+           Cyt=Cytosol,
+           Gra=Granule)
+  
+  .data <- proportions_dmso_multiple_isoforms %>%
+    filter(id %in% names(tx_foi)) %>%
+    mutate(Nuc=Nucleolus+Nucleus,
+           Cyt=Cytosol,
+           Gra=Granule)
+
+  p <- .data %>%
+    ggtern(aes(x=Cyt+Gra, y=Membrane, z=Nuc)) +
+    theme_bw(base_size=10) +
+    xlab('Cyt.') +
+    ylab('Mem.') +
+    zlab('Nuc.') +
+    theme_arrowlarge() +
+    theme_nogrid() +
+    theme_hidetitles() +
+    theme(strip.background = element_blank(),
+          strip.text.x=element_text(size=15, vjust=2),
+          strip.text.y=element_text(size=15, vjust=2)) + 
+    geom_point(aes(colour=external_transcript_name), size=4)  +
+    geom_point(data=.data_gene, size=4, pch=8)  +
+    scale_colour_manual(values=get_cat_palette(length(tx_foi)), name='')
+  
+  print(p)
+}
+```
+
+```{r}
+for(gene_id in head(isoform_specific_mem_loc$ensembl_gene_id, 5)){
+  
+  tx <- proportions_dmso_multiple_isoforms %>% filter(ensembl_gene_id==gene_id)
+  
+  tx_foi <- tx$external_transcript_name
+  names(tx_foi) <- tx$id
+  
+  plot_tx(tx_foi)
+  
+  .data_gene <- proportions_gene %>%
+    filter(id == tx$ensembl_gene_id[[1]]) %>%
+    filter(condition=='DMSO') %>%
+    mutate(Nuc=Nucleolus+Nucleus,
+           Cyt=Cytosol,
+           Gra=Granule)
+  
+  .data <- proportions_dmso_multiple_isoforms %>%
+    filter(id %in% names(tx_foi)) %>%
+    mutate(Nuc=Nucleolus+Nucleus,
+           Cyt=Cytosol,
+           Gra=Granule)
+
+  p <- .data %>%
+    ggtern(aes(x=Cyt+Gra, y=Membrane, z=Nuc)) +
+    theme_bw(base_size=15) +
+    xlab('Cyt.') +
+    ylab('Mem.') +
+    zlab('Nuc.') +
+    theme_arrowlarge() +
+    theme_nogrid() +
+    theme_hidetitles() +
+    theme(strip.background = element_blank(),
+          strip.text.x=element_text(size=15, vjust=2),
+          strip.text.y=element_text(size=15, vjust=2)) +
+    geom_point(aes(colour=external_transcript_name), size=6)  +
+    geom_point(data=.data_gene, size=6, pch=8)
+  
+  if(length(tx_foi)<=13){
+    p <- p + 
+      scale_colour_manual(values=get_cat_palette(length(tx_foi)), name='')
+  }
+  
+  return(p)
+}
+```
+OK, so the last gene above is really interesting. Very little difference in the coding sequence. However, 201 has an insertion of 52-52: Q → HPLPLCR and 208 is truncated and has an alternative C-terminus (PPFPHDPLLSGLPSAT). Given the canonical polypeptide is relatively short (140 AA), it's not suprising it doesn't reach the ER during translation. However, the non-canonical isoforms do! As both the alternative sequences are relatively proline-rich, I wonder if ribosome stalling is the explanation?
+
+```{r}
+transcript2coding <- getBM(attributes=c('ensembl_transcript_id', 'coding', 'external_transcript_name'), mart=ensembl,
+                           filters = 'ensembl_transcript_id', values=proportions_dmso_multiple_isoforms$id)
+
+
+dim(transcript2coding)
+transcript2coding <- transcript2coding %>% filter(coding!="Sequence unavailable")
+dim(transcript2coding)
+transcript2coding <- transcript2coding %>% filter(!grepl('N', coding))
+dim(transcript2coding)
+
+coding_seq <- transcript2coding$coding %>%
+  gsub(pattern='T', replacement='U') %>%
+  Biostrings::RNAStringSet()
+
+polypep <- suppressWarnings(coding_seq %>% Biostrings::translate())
+length(polypep)
+
+aa_freq <- Biostrings::letterFrequency(polypep, letters=Biostrings::alphabet(polypep)) %>%
+  data.frame()
+
+aa_freq$aas <- rowSums(aa_freq)
+dip_freq <- Biostrings::vcountPattern('PP', polypep)
+
+rownames(aa_freq) <- transcript2coding$ensembl_transcript_id
+names(dip_freq) <- transcript2coding$ensembl_transcript_id
+```
+
+```{r}
+tx <- proportions_dmso_multiple_isoforms %>% filter(ensembl_gene_id==gene_id)
+  
+tx_foi <- tx$external_transcript_name
+names(tx_foi) <- tx$id
+
+plot_tx(tx_foi)
+aa_freq[names(tx_foi),'P']
+dip_freq[names(tx_foi)]
+
+```
+
+```{r}
+tx <- proportions_dmso_multiple_isoforms %>% filter(ensembl_gene_id==gene_id)
+  
+tx_foi <- tx$external_transcript_name
+names(tx_foi) <- tx$id
+
+plot_tx_models(tx_foi, just_gene_models=TRUE)
+
+png('../../../../../5_manuscript_figures/Figure_2/transcripts/example_gene_models.png', width=4, height=4, units='in', res=400)
+plot_tx_models(tx_foi, just_gene_models=TRUE)
+dev.off()
+
+
+pdf('../../../../../5_manuscript_figures/Figure_2/transcripts/example_gene_models.pdf', width=4, height=4)
+plot_tx_models(tx_foi, just_gene_models=TRUE)
+dev.off()
+```
+Ternary plots for TMEM
+```{r}
+.data_gene <- proportions_gene %>%
+    filter(id == tx$ensembl_gene_id[[1]]) %>%
+    filter(condition=='DMSO') %>%
+    mutate(Nuc=Nucleolus+Nucleus,
+           Cyt=Cytosol,
+           Gra=Granule)
+  
+.data <- proportions_dmso_multiple_isoforms %>%
+  filter(id %in% names(tx_foi)) %>%
+  mutate(Nuc=Nucleolus+Nucleus,
+         Cyt=Cytosol,
+         Gra=Granule)
+
+p <- .data %>%
+  ggtern(aes(x=Cyt+Gra, y=Membrane, z=Nuc)) +
+  theme_bw(base_size=15) +
+  xlab('Cyt.') +
+  ylab('Mem.') +
+  zlab('Nuc.') +
+  theme_arrowlarge() +
+  theme_nogrid() +
+  theme_hidetitles() +
+  theme(strip.background = element_blank(),
+        strip.text.x=element_text(size=15, vjust=2),
+        strip.text.y=element_text(size=15, vjust=2)) +
+  geom_point(aes(colour=external_transcript_name), size=10)  +
+  geom_point(data=.data_gene, size=10, pch=8) + 
+  scale_colour_manual(values=get_cat_palette(length(tx_foi)), name='')
+
+print(p)
+ggsave('../../../../../5_manuscript_figures/Figure_2/transcripts/example_tern.png', width=6, height=3.5)
+ggsave('../../../../../5_manuscript_figures/Figure_2/transcripts/example_tern.pdf', width=6, height=3.5)
+```

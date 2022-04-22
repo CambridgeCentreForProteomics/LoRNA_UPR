@@ -1,0 +1,77 @@
+---
+title: "Finalise the localisation proportions"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Following the dLoRNA analysis of lncRNA:mRNA pairs, we now update the localisation proportions
+  to generate the final object which will be used in all downstream notebooks
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+```{r}
+library(biomaRt)
+library(tidyverse)
+
+ensembl <- useEnsembl(biomart="ensembl", version=102, dataset="hsapiens_gene_ensembl")
+
+```
+
+Read in sLoRNA proportions
+```{r}
+proportions <- readRDS('./out/proportions_single_table.rds')
+
+proportions_per_rep <- readRDS('./out/proportions_per_rep_single_table_flt.rds')
+
+```
+
+Read in lncRNA:mRNA distances information
+```{r}
+lncRNA_mRNA_distances_min_info <- readRDS('../../1_dlorna/2_lorna/3_proportional_localisation//out/lncRNA_mRNA_distances_min_info.rds')
+
+exclude_lncRNAs <- NULL
+exclude_lncRNAs$gene <- lncRNA_mRNA_distances_min_info %>%
+  filter(overlap |
+           (direction=='upstream' & distance < 3E4) |
+           (direction=='downstream' & distance < 1.5E4)) %>%
+  pull(name_lncRNA)
+
+
+```
+
+
+Update proportions
+
+```{r}
+dim(proportions_per_rep)
+
+proportions_per_rep_final <- proportions_per_rep %>%
+  filter(!id %in% exclude_lncRNAs$gene)
+
+dim(proportions_per_rep_final)
+```
+
+```{r}
+dim(proportions)
+
+proportions_final <- proportions %>%
+  filter(!id %in% exclude_lncRNAs$gene)
+  
+dim(proportions_final)
+
+```
+
+
+
+```{r}
+proportions_per_rep_final %>% saveRDS('./results/proportions_per_rep.rds')
+proportions_final %>% saveRDS('./results/proportions.rds')
+```
+
+
+

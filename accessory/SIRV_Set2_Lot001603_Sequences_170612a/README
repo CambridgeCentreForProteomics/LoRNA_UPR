@@ -1,0 +1,1 @@
+sed 's/>SIRVome_isoforms/>SIRV/g' SIRVome_isoforms_170612a.fasta | gzip > SIRVome_isoforms_170612a_renamed_entry.fasta.gz

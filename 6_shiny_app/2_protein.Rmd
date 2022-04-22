@@ -1,0 +1,98 @@
+---
+title: "Make the protein shiny app objects "
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we make the objects for the protein shiny apps
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+```{r}
+library(MSnbase)
+library(tidyverse)
+
+```
+
+Read in the protein data, including the pre-computed tSNE and BANDLE loc. allocations
+```{r}
+dlopit <- readRDS('../2_protein/notebooks/out/combined_protein_res_inc_bandle_loc.rds')
+```
+
+
+Select the required columns
+```{r}
+
+dlopit_selected <- dlopit %>% lapply(function(condition){
+  
+  fData(condition) <- fData(condition) %>%
+    mutate(FUNCTION=gsub('FUNCTION: ', '', FUNCTION)) %>%
+    dplyr::select('gene_names'=GENES,
+                  'UniProtKB_name'=`ENTRY-NAME`,
+                  markers,
+                  'protein_name'=`PROTEIN-NAMES`,
+                  'function'=FUNCTION,
+                  'tsne_dim1'=`Dimension 1`,
+                  'tsne_dim2'=`Dimension 2`,
+                  'primary_localisation'=bandle_alloc,
+                  'primary_localisation_per_rep'=bandle_alloc_all)
+  
+  return(condition)
+})
+
+
+dlopit %>% lapply(dim)
+dlopit_selected %>% lapply(dim)
+
+dlopit %>% lapply(function(x) dim(fData(x)))
+dlopit_selected %>% lapply(function(x) dim(fData(x)))
+
+
+```
+```{r}
+head(fData(dlopit_selected$DMSO))
+```
+Next, we need the BANDLE loc. / diff. loc. results
+```{r}
+bandle_diff_loc <- readRDS('../2_protein/notebooks/out/bandle_diff_loc_all_unique.rds')
+
+bandle_diff_loc <- bandle_diff_loc %>% dplyr::select(protein,
+                                  'diff_loc_level'=level,
+                                  'n_diff_loc_reps'=n.diff.loc.rep,
+                                  'diff_loc_reps'=diff.loc.reps)
+
+dim(bandle_diff_loc)
+```
+
+
+
+```{r}
+dlopit_for_shiny <- dlopit_selected %>% lapply(function(condition){
+  
+  fData(condition) <- fData(condition) %>%
+    merge(bandle_diff_loc, by.x='row.names', by.y='protein', all.x=TRUE) %>%
+    tibble::column_to_rownames('Row.names')
+  
+  return(condition)
+})
+```
+
+```{r}
+dlopit_selected %>% lapply(dim)
+dlopit_for_shiny %>% lapply(dim)
+
+dlopit_selected %>% lapply(function(x) dim(fData(x)))
+dlopit_for_shiny %>% lapply(function(x) dim(fData(x)))
+
+```
+
+```{r}
+saveRDS(dlopit_for_shiny, './out/dlopit.rds')
+
+```
+

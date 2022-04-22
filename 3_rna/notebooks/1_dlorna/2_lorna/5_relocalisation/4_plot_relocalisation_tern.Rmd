@@ -1,0 +1,145 @@
+---
+title: "Plotting relocalisation"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we maker ternary plots for the relocalisations in ER stress
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+```{r}
+library(camprotR)
+library(tidyverse)
+library(MSnbase)
+library(biomaRt)
+library(ggtern)
+library(pRoloc)
+```
+Read in quant and proportions
+```{r}
+all_datasets <- readRDS('../3_proportional_localisation/results/all_datasets_final.rds')
+proportions <- readRDS('../3_proportional_localisation/results/proportions.rds')
+
+proportions <- proportions %>% lapply(function(x){
+  x %>% mutate(condition=recode(condition, 'DMSO'='Control','Tg'='UPR'))
+})
+```
+
+
+Make ternary plots
+```{r}
+tern_plots <- proportions %>%
+  names() %>%
+  lapply(function(level){
+    
+    .data <- proportions[[level]]  %>%
+      mutate(Nuc=Nucleolus+Nucleus,
+             Cyt=Cytosol,
+             Gra=Granule)
+    
+    p <- .data %>%
+      ggtern(aes(x=Cyt, y=Membrane, z=Gra)) +
+      theme_bw(base_size=10) +
+      facet_wrap(~condition) +
+      xlab('Cyt.') +
+      ylab('Mem.') +
+      zlab('Cyt.L.') +
+      theme_bw() +
+      theme_arrowlarge() +
+      theme_hidetitles() +
+      theme(strip.background = element_blank(),
+            strip.text.x=element_text(size=15, vjust=2),
+            strip.text.y=element_text(size=15, vjust=2)) +
+      geom_point(size=0.1, alpha=0.1) 
+    
+    print(p)
+
+    return(list('.data'=.data, 'p'=p))
+  })
+
+tern_plots[[2]]$p
+```
+
+
+Map proportions into 3-way colour scale
+
+```{r}
+colours <- readRDS('../../../../../6_shiny_app/out/shiny_colours.rds')$RNA[1:6]
+loc_to_colours = colours
+names(loc_to_colours) <- gsub('-', '.', getMarkerClasses(all_datasets$gene$DMSO$corrected)) 
+
+loc_to_colours <- loc_to_colours[names(loc_to_colours)!='Mitochondrion']
+  
+fun_color_range <- lapply(names(loc_to_colours), function(loc){
+  x <- colorRampPalette(c(loc_to_colours[loc], "grey85", "grey85"))
+  x(110)})
+
+names(fun_color_range) <- names(loc_to_colours)
+
+
+dmso_proportions <- proportions$transcript %>%
+  filter(condition=='Control') %>%
+  mutate('Nucleus'=Nucleus+Nucleolus) %>%
+  dplyr::select(id, Cytosol, Membrane, Nucleus, Granule) %>%
+  tibble::column_to_rownames('id')
+
+dmso_proportions_colours <- dmso_proportions %>%
+  mutate(max=rowMax(as.matrix(.)),
+         max_loc=colnames(.)[apply(.,1,which.max)])
+
+dmso_proportions_colours <- dmso_proportions_colours %>%
+  rowwise() %>%
+  mutate(colour=fun_color_range[[max_loc]][(1+(100*(1-max)))])
+
+dmso_proportions_colours$id <- rownames(dmso_proportions)
+
+dmso_proportions_colours <- dmso_proportions_colours %>%
+  arrange(max)
+  
+```
+
+```{r, fig.height=3.5, fig.width=7}
+
+.data <- proportions$transcript  %>%
+  mutate(Nuc=Nucleolus+Nucleus,
+         Cyt=Cytosol,
+         Gra=Granule)
+
+p <- .data %>%
+  #filter(condition=='Control') %>%
+  merge(dmso_proportions_colours[,c('id', 'max', 'max_loc', 'colour')], by='id', all.x=TRUE) %>%
+  filter(max_loc!='Nucleus') %>%
+  arrange(max) %>%
+  ggtern(aes(x=Cyt, y=Membrane, z=Gra,  colour=colour, alpha=max)) +
+  theme_bw(base_size=10) +
+  xlab('Cyt.') +
+  ylab('Mem.') +
+  zlab('Cyt.L.') +
+  theme_bw() +
+  theme_arrowlarge() +
+  facet_wrap(~condition) +
+  theme_hidetitles() +
+  theme(strip.background = element_blank(),
+        strip.text.x=element_text(size=15, vjust=2),
+        strip.text.y=element_text(size=15, vjust=2)) +
+  geom_point(size=0.25, alpha=0.25) +
+  scale_colour_identity() +
+  scale_alpha_continuous(range=c(0, 0.25))
+
+print(p)
+
+ggsave('../../../../../5_manuscript_figures/Figure_4/tern/reloc.png', width=7, height=3.5)
+ggsave('../../../../../5_manuscript_figures/Figure_4/tern/reloc.pdf', width=7, height=3.5)
+
+```
+
+
+
+
+ 

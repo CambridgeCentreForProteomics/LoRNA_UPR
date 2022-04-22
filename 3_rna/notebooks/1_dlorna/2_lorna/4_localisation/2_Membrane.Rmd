@@ -1,0 +1,225 @@
+---
+title: "Membrane"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we examine the membrane localisation
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+
+```{r}
+library(tidyverse)
+library(camprotR)
+source('../../../../R/add_newlines.R')
+```
+
+Read in the proportions and TM/signal annotations
+```{r}
+average_proportion <- readRDS('../3_proportional_localisation/results/proportions.rds')
+tm_signal_annotations <- readRDS('../../../../../1_external/12_signal_TM/tm_signal_annotations.rds')
+
+average_proportion %>% lapply(dim)
+```
+
+Merge proportions and TM/signal annotations
+```{r}
+average_proportion$gene <- average_proportion$gene %>%
+  merge(tm_signal_annotations$gene, by.x='id', by.y='ensembl_gene_id')
+
+average_proportion$transcript <- average_proportion$transcript %>%
+  merge(tm_signal_annotations$transcript, by.x='id', by.y='ensembl_transcript_id')
+
+average_proportion %>% lapply(dim)
+```
+Histogram plots
+```{r}
+
+average_proportion %>% names() %>% lapply(function(level){
+  
+  p <- average_proportion[[level]] %>%
+    filter(!is.na(conservative_signal_tm)) %>%
+    mutate(conservative_signal_tm=ifelse(conservative_signal_tm, 'Signal/TM', 'No signal/TM')) %>%
+    ggplot(aes(Membrane)) +
+    geom_histogram(bins=20) +
+    theme_camprot() +
+    facet_wrap(~conservative_signal_tm, ncol=2, scales='free_y') +
+    xlab('Proportion membrane') +
+    ylab('Count') +
+    ggtitle(level)
+  
+})
+
+```
+Tally number of tx/genes with > 35% membrane.
+```{r}
+average_proportion %>% names() %>% lapply(function(level){
+  average_proportion[[level]] %>%
+  group_by(Membrane>0.35, conservative_signal_tm) %>%
+  tally()
+})
+```
+GO-term over-representation of non signal/TM in membranes
+```{r}
+human_go <- readRDS('../../../../../1_external/10_GO/all_go_genes_expanded.rds')
+
+```
+
+
+```{r}
+library(goseq)
+
+x <- average_proportion$gene %>% filter(condition=='DMSO', !conservative_signal_tm)
+
+genes_of_interest <- x$Membrane > 0.35
+names(genes_of_interest) <- x$id
+table(genes_of_interest)
+
+bias <- x$protein_length
+
+pwf <- nullp(genes_of_interest, bias.data=bias)
+
+goseq_res <- get_enriched_go(pwf, gene2cat=human_go,
+                             method='Hypergeometric',
+                             shorten_lims=c(0,50))
+
+```
+
+Plot GO over-representation results
+```{r}
+n_features <- sum(genes_of_interest)
+
+
+goseq_res_flt <- goseq_res %>%
+  filter(over_represented_adj_pval<0.05, numDEInCat>n_features/10) %>%
+  remove_redundant_go() %>%
+  camprotR::estimate_go_overrep(pwf, human_go)
+
+
+
+
+x <- goseq_res_flt %>%
+  arrange(desc(over_represented_adj_pval)) %>%
+  rowwise() %>%
+  mutate(term=add_newlines(str_trunc(term, 60, side="right", ellipsis='[..]'), 20)) %>%
+  mutate(term_ontology=paste0(term, ' (', ontology, ')')) %>%
+  mutate(term_ontology=factor(term_ontology, levels=term_ontology)) %>%
+  mutate(adj_overrep=log2(adj_overrep))
+  
+
+p <- x %>%
+  arrange(over_represented_adj_pval) %>%
+  ggplot(aes(adj_overrep, term_ontology, fill=-log10(over_represented_adj_pval))) +
+  geom_bar(stat='identity') +
+  theme_camprot(base_size=15, border=FALSE, base_family='sans') +
+  ylab('') +
+  xlab('Over-representation (log2)') +
+  scale_fill_continuous(limits=c(1, 7), breaks=seq(1,7,2),
+                        high=get_cat_palette(1), low='grey', name='-log10 (p-value)') +
+  geom_text(aes(label=numDEInCat), x=max(x$adj_overrep)*1.2, hjust=1) +
+  xlim(NA, max(x$adj_overrep)*1.2) +
+  theme(legend.direction='horizontal',
+        legend.position='top',
+        legend.justification=c(-1,1),
+        legend.key.size = unit(0.75, "lines"),
+        legend.text=element_text(size=12),
+        legend.title=element_text(size=12),
+        legend.margin = margin(0, 0, 0, 0)) +
+  guides(fill=guide_colorbar(ticks=FALSE))
+
+print(p)  
+ggsave('../../../../../5_manuscript_figures/Figure_3/mem_signal_tm/non_tm_signal_over_rep_go.png', height=3.5)
+ggsave('../../../../../5_manuscript_figures/Figure_3/mem_signal_tm/non_tm_signal_over_rep_go.pdf', height=3.5)
+  
+```
+
+
+OK, so the functionalities enriched in the membrane-localised RNAs which encode a polypeptide without predicted signal/TM are e.g 'membrane', 'actin cytoskeleton' and 'cortical cytoskeleton'. 
+
+
+
+
+
+
+Could the membranes also include localised translation in the cytoskeleton and/or PM?
+
+```{r}
+
+toi <- human_go %>% filter(TERM == 'actin binding') %>% pull(ensembl_gene_id)
+#toi <- human_go %>% filter(TERM == 'mitochondrial matrix') %>% pull(ensembl_gene_id)
+
+average_proportion$gene %>%
+  filter(condition=='DMSO') %>%
+  mutate(toi = ifelse(id %in% toi, 'Actin binding', 'Other')) %>%
+  mutate(mem_loc=Membrane>0.35) %>%
+  group_by(toi, conservative_signal_tm, condition, mem_loc) %>%
+  tally() %>%
+  ggplot(aes(toi, n, fill=mem_loc)) +
+  geom_bar(stat='identity', position='fill') +
+  geom_text(aes(label=n), position=position_fill(vjust=0.5)) +
+  scale_fill_manual(values=c('grey80', get_cat_palette(1)), name='Membrane\nlocalised') +
+  theme_camprot(base_size=15) +
+  facet_wrap(~ifelse(conservative_signal_tm, 'Signal/TM', 'No signal/TM')) +
+  xlab('') +
+  ylab('Frequency')
+```
+Include APEX-Seq OMM results to see whether we are potential finding OMM-enriched RNA in our membranes.
+```{r}
+
+mt_genes <- human_go %>% filter(go_id=='GO:0005739') %>% pull(ensembl_gene_id)
+
+apex_seq_omm <- readRDS('../../../../../1_external/6_APEX/out/apex_seq_fazal.rds') %>%
+  filter(localisation=='OMM') %>%
+  filter(is.finite(p.value))
+
+
+```
+
+```{r}
+dlorna_vs_apex_omm <- average_proportion$gene %>%
+  filter(condition=='DMSO', !conservative_signal_tm) %>%
+  merge(apex_seq_omm, by.x='id', by.y='Ensembl_Gene') %>%
+  mutate(is_mt=ifelse(id %in% mt_genes, 'GO:Mt', 'Other'))
+```
+
+```{r}
+
+dlorna_vs_apex_omm %>%
+  arrange(FDR<0.01) %>%
+  ggplot(aes(Membrane, l2fc, colour=is_mt)) +
+  geom_point(aes(alpha=is_mt, size=is_mt)) +
+  theme_camprot(border=FALSE, base_family='sans', base_size=15) +
+  ylab('APEX-Seq\nOMM vs Cyt (log2)') +
+  scale_colour_manual(values=c( get_cat_palette(1), 'grey70'), name='APEX-Seq sig.\nenriched OMM') +
+  scale_size_manual(values=c(1,.5), guide=FALSE) +
+  scale_alpha_manual(values=c(1,.5), guide=FALSE) +
+  scale_x_continuous(limits=c(0,1), breaks=seq(0,1,.2), name='Membrane proportion')+
+  theme(strip.background=element_blank()) +
+  geom_smooth()
+
+
+p <- dlorna_vs_apex_omm %>%
+  arrange(FDR<0.01) %>%
+  ggplot(aes(Membrane, l2fc, colour=FDR<0.01, alpha=FDR<0.01, size=FDR<0.01)) +
+  geom_point() +
+  facet_wrap(~is_mt) +
+  theme_camprot(border=FALSE, base_family='sans', base_size=15) +
+  ylab('APEX-Seq\nOMM vs Cyt (log2)') +
+  scale_colour_manual(values=c('grey70', get_cat_palette(1)), name='APEX-Seq sig.\nenriched OMM') +
+  scale_size_manual(values=c(0.5, 1), guide=FALSE) +
+  scale_alpha_manual(values=c(0.5, 1), guide=FALSE) +
+  scale_x_continuous(limits=c(0,1), breaks=seq(0,1,.2), name='Membrane proportion')+
+  theme(strip.background=element_blank())
+
+print(p)
+ggsave('../../../../../5_manuscript_figures/Figure_3/mem_signal_tm/apex_seq_omm.png', width=7, height=3.5)
+ggsave('../../../../../5_manuscript_figures/Figure_3/mem_signal_tm/apex_seq_omm.pdf', width=7, height=3.5)
+```
+OK, so mRNA for MT proteins with high membrane proportion are also enriched in OMM according to APEX-Seq. Does seem like we might be picking up some of the OMM enrichment with our membrane localisation.
+

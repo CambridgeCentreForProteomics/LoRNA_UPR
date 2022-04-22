@@ -1,0 +1,130 @@
+---
+title: "Add protein complex markers"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we add protein complex markers to the proteasome markers to make a
+  broader marker class
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+
+Here, we explore protein complexes and add these to the proteasome markers to make a 'protein complex' marker set
+
+```{r}
+library(tidyverse)
+library(camprotR)
+library(pRoloc)
+library(pRolocdata)
+library(pRolocExt)
+```
+Read in the protein quant data
+```{r}
+combined_protein_res <- readRDS('../../results/combined_protein_res.rds')
+
+```
+
+Read in the GO annotations
+```{r}
+go_human <- readRDS('../../../shared_files/h_sapiens_go_full.rds')
+```
+
+Define protein in the MARS complex.
+```{r}
+mars_complex <- go_human %>% filter(GO.ID=='GO:0017101') %>% pull(UNIPROTKB)
+```
+
+Define a function to plot a set of features(proteins) of interest
+```{r}
+
+
+plot_foi <- function(foi, foi_name, foi_alpha=0.25){
+  .data <- combined_protein_res$DMSO
+  .pca <- plot2D(.data, addLegend='bottomright')
+  highlightOnPlot(.pca, foi=intersect(rownames(.data), foi))
+  
+  .pca <- plot2D(.data, addLegend='bottomright', dims=c(3,4))
+  highlightOnPlot(.pca, foi=intersect(rownames(.data), foi))
+  
+  
+  fData(.data)$markers[rownames(.data) %in% foi] <- foi_name
+  fData(.data)$markers <- factor(fData(.data)$markers,
+                                 levels=c(getMarkerClasses(combined_protein_res$DMSO), foi_name))
+  
+  plot_marker_profiles(.data[fData(.data)$markers %in% c(
+    'PROTEASOME', 'CYTOSOL', 'NUCLEOPLASM-1', 'NUCLEOPLASM-2', foi_name)],
+                       group_by='replicate', alpha=c(0.1, 0.1, 0.2, 0.2, foi_alpha)) +
+    scale_colour_manual(values=c(get_cat_palette(4), 'black'))
+}
+
+plot_foi(mars_complex, 'MARS complex', 0.5)
+```
+
+
+```{r}
+sig_complex <- go_human %>% filter(GO.ID=='GO:0008180') %>% pull(UNIPROTKB)
+plot_foi(sig_complex, 'Signalosome', 1)
+
+```
+
+```{r}
+eif3_complex <- go_human %>% filter(GO.ID=='GO:0005852') %>% pull(UNIPROTKB)
+plot_foi(eif3_complex, 'eIF3 Complex', 1)
+
+```
+
+OK, so that should be plenty to define the new cluster. Now, let's consider all together and identify outliers which we don't want to include
+```{r}
+protein_complexes <- c(eif3_complex, sig_complex, mars_complex)
+plot_foi(protein_complexes, 'Protein complexes', 0.25)
+
+```
+```{r}
+pca_proj <- make_proj(combined_protein_res$DMSO)
+
+outliers <- pca_proj[intersect(rownames(pca_proj), protein_complexes),] %>%
+  filter(!!sym(colnames(pca_proj)[1])>(-4)) %>% # from PCA above, this seems like a reasonable cut-off
+  rownames()
+
+print(length(protein_complexes))
+print(length(outliers))
+```
+Check for final set of protein complex proteins
+```{r}
+plot_foi(setdiff(protein_complexes, outliers), 'Protein complexes', 0.25)
+
+```
+
+Add the new markers and rename proteasome to protein complex.
+```{r}
+combined_protein_res_updated_pc <- combined_protein_res %>%
+  lapply(function(x){
+    fData(x)$markers[fData(x)$markers=='PROTEASOME'] <- 'PROTEIN COMPLEX'
+    fData(x)$markers[
+      rownames(x) %in% setdiff(protein_complexes, outliers)] <- 'PROTEIN COMPLEX'
+    
+    fData(x)$markers_split_ribo[fData(x)$markers_split_ribo=='PROTEASOME'] <- 'PROTEIN COMPLEX'
+    fData(x)$markers_split_ribo[
+      rownames(x) %in% setdiff(protein_complexes, outliers)] <- 'PROTEIN COMPLEX'
+    return(x)
+  })
+```
+
+
+```{r}
+combined_protein_res_updated_pc %>%
+  sapply(function(x) plot2D(x, addLegend='bottomright'))
+```
+
+
+```{r}
+saveRDS(combined_protein_res_updated_pc,
+        '../../results/combined_protein_res_finalised_markers.rds')
+```
+

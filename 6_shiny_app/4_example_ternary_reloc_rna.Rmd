@@ -1,0 +1,129 @@
+---
+title: "Ternary plots for RNA relocalisation"
+output: html_notebook
+---
+
+Here, we produce examples for RNA relocalisation visulation using ternary plots
+```{r}
+library(MSnbase)
+library(magrittr)
+library(dplyr)
+library(ggtern)
+library(camprotR) # https://github.com/CambridgeCentreForProteomics/camprotR - just being used for colours below. To avoid dependency in shiny app, can just copy over the colours from here: https://github.com/CambridgeCentreForProteomics/camprotR/blob/6058ca4acbaf071fc2b0f019adfe7001b043f150/R/get_cat_palette.R#L18-L19
+
+
+```
+Just using the transcript-level abundances here. Subset to common features.
+```{r}
+dlorna <- readRDS('./out/dlorna.rds')$transcript
+
+obs_tx <- lapply(dlorna, rownames)
+
+dlorna_common_tx <- intersect(obs_tx[[1]], obs_tx[[2]])
+
+dlorna <- lapply(dlorna, function(x) x[dlorna_common_tx,])
+
+dlorna %>% lapply(dim)
+```
+Extract the proportions from the fData, move rownames to a column, annotate with condition and bind rows from both conditions
+```{r}
+
+proportions <- dlorna %>%
+  names() %>%
+  lapply(function(cond){
+    fData(dlorna[[cond]]) %>%
+      select(Cytosol, Membrane, Granule) %>%
+      filter(is.finite(Cytosol), is.finite(Membrane), is.finite(Granule)) %>%
+      tibble::rownames_to_column('ensembl_transcript_id') %>%
+      mutate('condition'=cond)
+  }) %>% bind_rows()
+  
+head(proportions)
+```
+
+
+Function for relocalisation ternary plot
+```{r, fig.height=4, fig.width=4}
+
+plot_ternary_reloc <- function(tx_ids){
+  
+  tx_ids <- unique(tx_ids)
+
+  .data <- proportions %>%
+    filter(ensembl_transcript_id %in% tx_ids) 
+  
+  # switch for aesthetics. If <= 8 features, highlight each feature with colour
+  if(nrow(.data)<=16){ # 2 rows per feature
+    highlight <- TRUE
+  } else if(nrow(.data)<=50){ # If 9-25 features, don't highlight
+    highlight = FALSE
+  } else{ # if more than 25, plot will be a mess...
+    stop('Too many features to plot')
+  }
+  
+  # Size aesthetics may need update for shiny app
+  p <- .data %>%
+    ggtern(aes(x=Cytosol, y=Membrane, z=Granule)) +
+    theme_bw(base_size=15) +
+    theme_arrowlarge() + theme_nogrid() + theme_hidetitles() # ggtern themes
+
+  if(highlight){
+    p <- p +
+      aes(colour=ensembl_transcript_id) +
+      geom_point(data=.data[.data$condition=='DMSO',],
+                 size=2,
+                 alpha=1,
+                 show.legend=FALSE)  +
+      geom_path(aes(group=ensembl_transcript_id),
+                arrow = arrow(type = "closed", angle = 30, length = unit(0.3, "cm")),
+                size = 0.25) +
+      scale_colour_manual(values=c(camprotR::get_cat_palette(7), 'grey'), name='')
+    
+  } else{
+  p <- p + 
+    geom_point(data=.data[.data$condition=='DMSO',],
+               size=1,
+               alpha=0.5,
+               colour=get_cat_palette(1))  +
+    geom_path(aes(group=ensembl_transcript_id),
+              size=0.25,
+              alpha=0.5,
+              colour='grey') +
+    geom_path(aes(group=ensembl_transcript_id),
+              arrow = arrow(type = "closed", angle = 30, length = unit(0.2, "cm")),
+              size = 0,
+              colour=get_cat_palette(2)[2])
+  
+  
+  }
+  return(p)
+}
+
+
+```
+
+
+Example with a few transcripts
+```{r}
+example_gene1 <- 'TMEM107'
+
+example_tx1 <- fData(dlorna$DMSO) %>% dplyr::filter(gene_name==example_gene1) %>% rownames()
+
+plot_ternary_reloc(example_tx1)
+```
+
+Example with more transcripts
+```{r}
+
+example_tx2 <- rownames(dlorna$DMSO)[1:20]
+
+plot_ternary_reloc(example_tx2)
+```
+Reasonable to (throw an error / message and no plot) if too many features are being plotted in one go. 25 seems like a reasonable limit for the above plot before it gets impossible to see what's going on
+```{r}
+
+example_tx3 <- rownames(dlorna$DMSO)[1:100]
+plot_ternary_reloc(example_tx3)
+```
+
+

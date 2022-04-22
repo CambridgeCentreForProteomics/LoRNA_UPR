@@ -1,0 +1,108 @@
+---
+title: "smFISH vs LoRNA proportions"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(camprotR)
+library(MSnbase)
+```
+
+```{r}
+dlorna_proportions <- readRDS('../../3_rna/notebooks/1_dlorna/2_lorna/4_proportional_localisation/results/proportions_per_rep.rds')$gene %>%
+  filter(condition=='DMSO') %>%
+  select(ensembl_gene_id=id, Membrane)
+```
+
+
+
+```{r}
+dlorna <-  readRDS('../../6_shiny_app/out/dlorna.rds')$gene$DMSO
+```
+
+```{r}
+feature_data <- fData(dlorna) %>% select(gene_name) %>% tibble::rownames_to_column('ensembl_gene_id')
+```
+
+```{r}
+stderr <- function(x, na.rm=FALSE) {
+  if (na.rm) x <- na.omit(x)
+  sqrt(var(x)/length(x))
+}
+```
+
+```{r}
+dlorna_proportions_summarised <- dlorna_proportions %>% merge(feature_data, by='ensembl_gene_id') %>%
+  group_by(gene_name) %>%
+  summarise(mean_proportion_lorna=mean(Membrane),
+            sd_proportion_lorna=sd(Membrane),
+            se_proportion_lorna=stderr(Membrane),
+            n=length(Membrane))
+
+
+```
+
+```{r}
+head(dlorna_proportions_summarised)
+```
+
+
+Here, we compare the membrane proportions obtained by LoRNA with ER proportions estimated from smFISH
+```{r}
+smFISH <- readxl::read_excel('./smFISH/smFISH_ER_proportions.xlsx', sheet=1)[,1:6]
+
+smFISH_summarised <- smFISH %>%
+  mutate(RNA=toupper(RNA)) %>%
+  filter(M2!='\\') %>%
+  mutate(M2=as.numeric(M2)) %>%
+  group_by(RNA) %>%
+  summarise(mean_proportion_smfish=mean(M2),
+            sd_proportion_smfish=sd(M2),
+            se_proportion_smfish=stderr(M2),
+            n=length(M2))
+  
+print(smFISH_summarised)
+```
+
+
+```{r}
+compared_methods <- dlorna_proportions_summarised %>%
+  mutate(RNA=toupper(gene_name)) %>%
+  merge(smFISH_summarised, by='RNA')
+  
+print(compared_methods)
+```
+```{r}
+library(ggrepel)
+```
+
+```{r}
+
+p_cor <- cor(compared_methods$mean_proportion_lorna, compared_methods$mean_proportion_smfish, method='pearson')
+print(p_cor)
+
+p <- compared_methods %>%
+  ggplot(aes(mean_proportion_lorna, mean_proportion_smfish)) +
+  geom_abline(slope=1, linetype=2, colour='grey') +
+  geom_errorbar(aes(xmax=mean_proportion_lorna + (2*se_proportion_lorna),
+                     xmin=mean_proportion_lorna - (2*se_proportion_lorna))) +
+  geom_errorbar(aes(ymax=mean_proportion_smfish + (2*se_proportion_smfish),
+                    ymin=mean_proportion_smfish - (2*se_proportion_smfish)), width=0) +
+  geom_point(aes(colour=RNA), size=3) +
+  theme_camprot(base_family='sans', base_size=15, border=FALSE) +
+  scale_x_continuous(limits=c(-.05,1), name='LORITO membrane proportion') +
+  scale_y_continuous(limits=c(-.05,1), name='smFISH ER proportion') +
+  coord_cartesian(expand=FALSE) +
+  scale_colour_manual(values=get_cat_palette(6)[c(1:4, 6)], name='') +
+  theme(legend.position=c(0,1.1), legend.justification=c(0,1), legend.background=element_blank()) +
+  annotate(geom='text', label=paste("rho == ", round(p_cor, 2)), parse=TRUE, x=0.7, y=0.9, size=5)
+
+print(p)  
+```
+
+```{r}
+ggsave('./smFISH/correlation.png', width=3.9, height=3.5)
+ggsave('./smFISH/correlation.pdf', width=3.9, height=3.5)
+```
+

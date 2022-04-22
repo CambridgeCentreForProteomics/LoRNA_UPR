@@ -1,0 +1,298 @@
+---
+title: "NNLS for proportional localisation"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we use NNLS for proportional localisation assignment
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+```{r}
+library(pRoloc)
+library(pRolocExt)
+library(tidyverse)
+library(camprotR)
+library(glmnet)
+library(pbapply)
+```
+Read in the data and subset to gene-level SIRV-corrected datasets
+```{r}
+gene_quant <- readRDS('../2_data_processing/out/all_datasets.rds')$gene$corrected
+
+getMarkers(gene_quant)
+```
+
+
+
+Define a function to estimate proportions using the average profiles for markers
+
+
+```{r}
+get_proportions <- function(obj,
+                            iterations,
+                            sample=TRUE,
+                            sample_proportion=1,
+                            n=NULL,
+                            cores=4,
+                            feature_col='markers'){
+
+  complete_data<- obj %>% filterNA()
+      
+  ########
+  # get average profiles for all localisations,
+  # with boostrapping proceedure to sample the markers
+      
+  complete_data <- complete_data[fData(complete_data)[[feature_col]]!='unknown',]
+  complete_rows <- rownames(complete_data)
+  
+  sampled_data <- 1:iterations %>% pblapply(function(x){
+      if(sample){
+        sampled_row <- sample(complete_rows, length(complete_rows)*sample_proportion, replace=TRUE) 
+        sampled_e <- exprs(complete_data)[sampled_row,]
+        sampled_f  <- fData(complete_data)[sampled_row,]
+        rownames(sampled_e) <- 1:nrow(sampled_e)
+        rownames(sampled_f) <- 1:nrow(sampled_f)
+        
+        MSnSet(sampled_e, sampled_f)
+        
+      } else{complete_data}
+    }, cl=cores)
+
+  names(sampled_data) <- 1:iterations
+  
+  sampled_data <- sampled_data[sapply(sampled_data, FUN=function(x){
+    length(getMarkerClasses(x, feature_col))==length(getMarkerClasses(complete_data, feature_col))})]
+  
+  ave_profiles <- sampled_data %>% pblapply(function(x){
+    mrkConsProfiles(x, feature_col)
+  }, cl=cores)
+  
+  ########
+  
+  # Remove RNAs encoded in the mitochondiral genome. These are all Mt markers
+  #obj <- obj[fData(obj)$chromosome_name != 'MT', ]
+  
+  if(missing(n)){
+    n <- nrow(obj)
+  }
+
+  rows <- pblapply(1:n, function(row_id){
+  
+    iteration_results <- lapply(ave_profiles, function(ave_profile){
+      
+      indep_var <- t(ave_profile)
+      
+      fit <- glmnet(indep_var,
+                    exprs(obj)[row_id,],
+                    family='gaussian',
+                    lower.limits=0,
+                    lambda=0,
+                    alpha=0)
+      
+      coefs <- coefficients(fit)[,1]
+      
+      coefs[2:length(coefs)] <- coefs[2:length(coefs)]/sum(coefs[2:length(coefs)])
+      
+      return(c(coefs, 'var_explained'=fit$dev.ratio))
+      }) %>% do.call(what='rbind')
+
+    iteration_results_summarised <- lapply(2:nrow(iteration_results), function(n){
+        mean_values <- apply(iteration_results[1:n,], MARGIN=2, mean)
+        sd <- apply(iteration_results[1:n,], MARGIN=2, sd)
+        names(mean_values) <- paste0('mean_', names(mean_values))
+        names(sd) <- paste0('sd_', names(sd))
+        
+        return(c(sd, mean_values, 'iterations'=n))
+      }) %>% do.call(what='rbind') %>%
+      apply(MARGIN=2, FUN=mean)
+    
+    return(iteration_results_summarised)
+  }, cl=cores)
+
+
+  rows <- rows %>%
+    do.call(what='rbind') %>% 
+    data.frame()
+  
+  rows$markers=fData(obj)[[feature_col]][1:n]
+  rows$id=rownames(fData(obj))[1:n]
+  
+  return(rows)
+}
+
+```
+
+Estimate proportions
+```{r, eval=FALSE}
+start_time <- Sys.time()
+
+iterations <- 100
+sampling_rate <- 0.8
+
+proportions_per_rep <-
+  unique(pData(gene_quant)$replicate) %>%
+  lapply(function(rep){
+    print(rep)
+
+    proportions <- get_proportions(
+      obj=gene_quant[,pData(gene_quant)$replicate==rep],
+      iterations=iterations,
+      sample_proportion=sampling_rate,
+      cores=4)
+  
+    proportions <- proportions %>% mutate(replicate=rep)
+    
+    return(proportions)
+  })
+
+
+end_time <- Sys.time()
+
+print(end_time-start_time)
+
+proportions_per_rep %>% saveRDS('./out/proportions_per_rep.rds')
+```
+
+
+
+
+
+
+Convert to a single table for all replicates together
+```{r}
+proportions_per_rep <- readRDS('./out/proportions_per_rep.rds')
+
+proportions_per_rep_single_table <- proportions_per_rep %>% do.call(what='rbind')
+
+proportions_per_rep_single_table <- proportions_per_rep_single_table %>% 
+    dplyr::rename(
+      Membrane=mean_Membrane,
+      Nucleus=mean_Nucleus,
+      Cytosol=mean_Cytosol,
+      Mitochondrion=mean_Mitochondrion)
+
+
+```
+
+
+
+
+Next, we want to generate some standard tables of summarised proportions across the replicates. For this, we will also filter by:
+
+- Variance explained over threshold (TBD)
+- (Absolute value of) Intercept below a threshold (TBD)
+- Number of observations >= 2
+
+
+Let's explore the distributions for variance explained and intercept.
+```{r}
+summary(proportions_per_rep_single_table$mean_.Intercept.)
+summary(proportions_per_rep_single_table$mean_var_explained)
+
+p <- ggplot(proportions_per_rep_single_table, aes(mean_var_explained)) +
+  geom_histogram() +
+  theme_camprot()
+
+print(p)
+print(p + aes(mean_.Intercept.))
+
+p <- ggplot(proportions_per_rep_single_table, aes(mean_var_explained, mean_.Intercept.)) +
+  geom_point(alpha=0.05, size=0.2, colour='grey30') +
+  annotate("rect", xmin = .9, xmax = 1, ymin = -0.05, ymax = 0.05,
+           alpha = .2, fill=get_cat_palette(2)[2], colour=NA) +
+  geom_density2d(colour=get_cat_palette(1)) +
+  theme_camprot()
+
+
+print(p)
+
+```
+
+Set thresholds for variance explained and intercept.
+```{r}
+proportions_per_rep_single_table %>%
+  mutate(low_var=mean_var_explained<0.9,
+         high_intercept=abs(mean_.Intercept.) > 0.05) %>%
+  group_by(low_var, high_intercept) %>%
+  tally()
+
+```
+OK, so the about filters will remove ~ 10% of the proportion estimations and seem very reasonable. Let's see how many genes will remain.
+
+First, if we just filter to retain all genes at least 3/5 quantifications
+```{r}
+print(length(unique(proportions_per_rep_single_table$id)))
+
+proportions_per_rep_single_table %>%
+  filter(is.finite(Cytosol)) %>%
+  group_by(id) %>%
+  summarise(n=length(Cytosol), 
+            Cytosol=mean(Cytosol)) %>%
+  filter(n>=3) %>%
+  nrow()
+
+```
+
+
+OK, so we have quantification for 14650/14653 genes if we don't filter by variance explained or intercept (e.g in at least 3/5 replicates).
+```{r}
+proportions_per_rep_single_table %>%
+  filter(mean_var_explained > 0.9,
+         abs(mean_.Intercept.) < 0.05) %>%
+  filter(is.finite(Cytosol)) %>%
+  group_by(id) %>%
+  summarise(n=length(Cytosol), 
+            Cytosol=mean(Cytosol)) %>%
+  filter(n>=3) %>%
+  nrow()
+
+```
+With the above filters, this drops to 13853, which seems reasonable.
+
+
+```{r}
+proportions_per_rep_single_table_flt <- proportions_per_rep_single_table %>%
+    filter(mean_var_explained > 0.85,
+           abs(mean_.Intercept.) < 0.05) %>%
+    filter(is.finite(Cytosol)) # can filter on any column here
+
+nrow(proportions_per_rep_single_table)
+nrow(proportions_per_rep_single_table_flt)
+
+```
+Summarise across replicates
+```{r}
+proportions_single_table <- proportions_per_rep_single_table_flt %>%
+      group_by(id) %>%
+      summarise(n=length(Cytosol), 
+                sd_Cytosol=sd(Cytosol),
+                sd_Nucleus=sd(Nucleus),
+                sd_Membrane=sd(Membrane),
+                sd_Mitochondrion=sd(Mitochondrion),
+                Cytosol=mean(Cytosol),
+                Nucleus=mean(Nucleus),
+                Membrane=mean(Membrane),
+                Mitochondrion=mean(Mitochondrion),) %>%
+      filter(n>=3) %>%
+      dplyr::select(-n)
+```
+
+```{r}
+
+proportions_per_rep_single_table %>% 
+  saveRDS('./out/proportions_per_rep_single_table.rds')
+
+proportions_per_rep_single_table_flt %>%
+  saveRDS('./out/proportions_per_rep_single_table_flt.rds')
+
+proportions_single_table %>%
+  saveRDS('./out/proportions_single_table.rds')
+```
+
+
+

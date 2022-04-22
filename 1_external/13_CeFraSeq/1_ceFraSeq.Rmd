@@ -1,0 +1,138 @@
+---
+title: "CeFra-Seq"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we parse the supplementary table for CeFra-Seq (Bouvrette et al 2018)
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+```{r}
+library(dplyr)
+```
+
+
+REad in the supplementary data from Bouvrette et al (2018)
+```{r}
+
+cefraseq_files <- list('sup3'='./Bouvrette_et_al_2018/sup_table_3.xlsx', 
+                       'sup4'='./Bouvrette_et_al_2018/sup_table_4.xlsx')
+
+
+readxl::read_excel(cefraseq_files$sup3)
+
+getCeFraSeq <- function(infile){
+  readxl::read_excel(infile) %>%
+    rowwise() %>%
+    mutate(mean_nuc=(nucl_A+nucl_B)/2, 
+           mean_cyt=(cyto_A+cyto_B)/2, 
+           nuc_cyt=log2(mean_nuc/mean_cyt),
+           mean_mem=(membr_A+membr_B)/2, 
+           mem_cyt=log2(mean_mem/mean_cyt))
+}
+
+cefraseq <- cefraseq_files %>% lapply(getCeFraSeq)
+cefraseq %>% lapply(nrow)
+cefraseq %>% lapply(head)
+
+print(length(cefraseq$sup3$ensembl_gene_id))
+print(length(unique(cefraseq$sup3$ensembl_gene_id)))
+
+```
+Save for use in analysis notebooks.
+```{r}
+saveRDS(cefraseq, './out/cefraseq.rds')
+```
+
+And repeat the process from the ENCODE database, so we can get the totals as well
+```{r}
+library(ENCODExplorer)
+encode_df <- get_encode_df()
+download_dir <- './ENCODE_download'
+dir.create(download_dir)
+
+
+query_results <- queryEncode(organism = "Homo sapiens",
+                             biosample_name = c('K562', 'HepG2'),
+                             file_format='tsv',
+                             fuzzy = TRUE) %>%
+  dplyr::filter(output_type=='gene quantifications',
+                grepl('from Lecuyer', dataset_description),
+                assembly=='GRCh38')
+
+
+downloadEncode(query_results, dir=download_dir)
+
+
+
+```
+
+```{r}
+accession_info <- query_results %>%
+  mutate(sample_type=gsub('(HepG2 |HepG2|K562 |K562| fraction)', '', dataset_biosample_summary)) %>%
+  mutate(sample_type=ifelse(sample_type=='', 'Total', sample_type)) %>%
+  dplyr::select(file_accession, biosample_name, assay, dataset_biosample_summary, sample_type)
+```
+
+Below, we separately read in the quant for the samples from each cell line and assay type (total/polyA) and then generate two quant tables (TPM & FPKM for each)
+```{r}
+
+cefraseq_quant <- NULL
+
+for(cell_line in unique(accession_info$biosample_name)){
+  
+  cefraseq_quant[[cell_line]] <- NULL
+  
+  cell_line_accession_info <- accession_info %>% filter(biosample_name==cell_line)
+  
+  for(rna_seq_assay in unique(cell_line_accession_info$assay)){
+    
+    cell_line_assay_accession_info <- cell_line_accession_info %>% filter(assay==rna_seq_assay)
+    
+    cefraseq_quant[[cell_line]][[rna_seq_assay]] <- NULL
+    
+    #assumes pairs of sample with same sample type are in order
+    accession2sample_name <- paste0(gsub(' ', '_', cell_line_assay_accession_info$sample_type), c('_1', '_2'))
+    names(accession2sample_name) <- cell_line_assay_accession_info$file_accession
+
+    .quant_table_long <- lapply(cell_line_assay_accession_info$file_accession, function(accession){
+  
+      infile <- file.path(download_dir, paste0(accession, '.tsv'))
+      
+      read.table(infile, header=TRUE) %>%
+        filter(grepl('ENS', gene_id)) %>%
+        mutate(gene_id=gsub('\\..*$', '', gene_id)) %>%
+        dplyr::select(gene_id, FPKM, TPM) %>%
+        mutate('sample_name'=accession2sample_name[[accession]])
+      
+    })  %>%
+      bind_rows()
+    
+    cefraseq_quant[[cell_line]][[rna_seq_assay]]$TPM <- .quant_table_long %>%
+      dplyr::select(gene_id, sample_name, TPM) %>%
+      pivot_wider(names_from='sample_name', values_from='TPM') %>%
+      tibble::column_to_rownames('gene_id')
+    
+    cefraseq_quant[[cell_line]][[rna_seq_assay]]$FPKM <- .quant_table_long %>%
+      dplyr::select(gene_id, sample_name, FPKM) %>%
+      pivot_wider(names_from='sample_name', values_from='FPKM') %>%
+      tibble::column_to_rownames('gene_id')
+  }
+  
+}
+
+
+
+saveRDS(cefraseq_quant, './out/cefraseq_quant.rds')
+
+```
+
+
+
+

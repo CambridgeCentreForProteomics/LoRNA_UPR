@@ -1,0 +1,12 @@
+Protocol	Target_protein	Ref
+IF	Anti-Calnexin	Abcam ab22595
+IF	Anti-ZNF622	Santa-Cruz sc-10098
+IF	Goat anti-Rabbit IgG	Invitrogen, A-21245
+IF	Goat anti-Mouse IgG	Invitrogen, A-11029
+WB	Anti-b-tubulin	CST #2146
+WB	Anti-eIF3d	Proteintech #66024-1-lg
+WB	Anti-fibrillarin	Cell Signaling C13C3
+WB	anti-histone H3 	Bethyl Laboratories #A300-823A
+WB	anti-beta actin	Abcam ab8227
+WB	anti-calreticulin	Cell Signaling D3E6
+WB	Anti-COX 1V	Cell Signalling 4850

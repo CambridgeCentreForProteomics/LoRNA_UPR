@@ -1,0 +1,463 @@
+---
+title: "Exploring features predicting tg-resistant membrane localisation"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we further examine the features which predict
+  reduced membrane relocalisation upon ER stress
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+Load libraries
+```{r}
+library(biomaRt)
+library(tidyverse)
+library(camprotR)
+```
+
+Load model outputs from previous notebook
+```{r}
+penalised_coefficients <- readRDS('./out/penalised_coefficients.rds')
+penalised_fits <- readRDS('./out/penalised_fits.rds')
+residuals_annot <- readRDS('./out/residuals_annot.rds')
+```
+
+Plot the Tg vs DMSO membrane localisations, highlighting RNAs bound by RBPs with non-zero coefficient estimates in the penalised models.
+```{r, fig.height=10, fig.width=10}
+
+penalised_coefficients %>% names() %>% lapply(function(level){
+  
+  penalised_coefficients[[level]] %>% names() %>% lapply(function(model_type){
+  
+  sig_rbps <- penalised_coefficients[[level]][[model_type]] %>%
+    dplyr::filter(abs(coef)>0.005) %>%
+    arrange(desc(coef)) %>%
+    rownames() %>%
+    setdiff(c('log10_distance_from_end', '(Intercept)'))
+  
+  p <- penalised_fits[[level]]$penalised_fits[[model_type]]$data_to_fit %>%
+    dplyr::select(DMSO, Tg, sig_rbps) %>%
+    pivot_longer(cols=-c(DMSO, Tg), names_to='eCLIP_target', values_to='Bound') %>%
+    mutate(eCLIP_target=factor(eCLIP_target, levels=sig_rbps)) %>%
+    ggplot(aes(DMSO, Tg, colour=factor(Bound))) +
+    geom_point(aes(alpha=factor(Bound), size=factor(Bound))) +
+    geom_smooth() +
+    theme_camprot(base_size=15) +
+    facet_wrap(~eCLIP_target) +
+    scale_colour_manual(values=c('grey20', get_cat_palette(7)[7]),
+                        name='', labels=c('Unbound', 'Bound')) +
+    scale_size_manual(values=c(.2, .5), name='', labels=c('Unbound', 'Bound')) +
+    scale_alpha_manual(values=c(.2, .5), name='', labels=c('Unbound', 'Bound')) +
+    theme(strip.background=element_blank()) +
+    ggtitle(paste(level, model_type, sep=', '))
+  
+  print(p)
+  
+  return(NULL)
+  })
+  
+})
+
+```
+
+Let's repeat the above but just for sig. eIF3 subunits
+```{r}
+eif3_sig_subunits <- c("EIF3D_HepG2", "EIF3H_HepG2")
+  
+to_plot_eif3 <- penalised_coefficients %>% names() %>% lapply(function(level){
+  
+  penalised_coefficients[[level]] %>% names() %>% lapply(function(model_type){
+  
+  penalised_fits[[level]]$penalised_fits[[model_type]]$data_to_fit %>%
+      dplyr::select(id, DMSO, Tg, eif3_sig_subunits) %>%
+      mutate(model=model_type)
+
+  }) %>% bind_rows()
+  
+})
+
+names(to_plot_eif3) <- names(penalised_coefficients)
+```
+
+```{r}
+ p <- to_plot_eif3$transcript %>%
+  pivot_longer(cols=-c(id, DMSO, Tg, model), names_to='eCLIP_target', values_to='Bound') %>%
+  mutate(eCLIP_target=gsub('_.*', '', eCLIP_target)) %>%
+  ggplot(aes(DMSO, Tg, colour=factor(Bound))) +
+  geom_point(aes(alpha=factor(Bound), size=factor(Bound))) +
+  geom_smooth(se=FALSE) +
+  theme_camprot(base_size=15, border=FALSE, base_family='sans') +
+  facet_wrap(~eCLIP_target) +
+  scale_colour_manual(values=c('grey30', get_cat_palette(7)[7]),
+                      name='', labels=c('Unbound', 'Bound')) +
+  scale_size_manual(values=c(.1, .5), name='', labels=c('Unbound', 'Bound')) +
+  scale_alpha_manual(values=c(.1, .5), name='', labels=c('Unbound', 'Bound')) +
+  theme(strip.background=element_blank()) +
+  xlab('Membrane proportion DMSO') +
+  ylab('Membrane proportion 1hr Tg')
+
+print(p)
+ggsave('../../../../../5_manuscript_figures/Figure_6/mem_proportions/eif3_mem_prop.png', width=7, height=3.5)
+ggsave('../../../../../5_manuscript_figures/Figure_6/mem_proportions/eif3_mem_prop.pdf', width=7, height=3.5)
+```
+
+
+
+Let's explore eiF3D further
+
+Lamper et al (2020) -> 5' cap eIF3D binding assay.
+
+```{r}
+lamper_et_al_S1 <- readxl::read_excel(
+  '../../../../../1_external/11_eif3//Lamper_et_al_2020/abb0993-Lamper-SM-Table-S1.xlsx')
+lamper_et_al_S1$pvalue <- ifelse(lamper_et_al_S1$pvalue=='*',
+                                 5E-324,
+                                 as.numeric(lamper_et_al_S1$pvalue))
+
+lamper_et_al_S1$padj <- ifelse(lamper_et_al_S1$padj=='*',
+                               5E-324,
+                               as.numeric(lamper_et_al_S1$padj))
+
+
+lamper_et_al_S2 <- readxl::read_excel(
+  '../../../../../1_external/11_eif3//Lamper_et_al_2020/abb0993-Lamper-SM-Table-S2.xlsx'
+)
+
+  
+```
+
+
+```{r}
+
+
+Residuals_gene_Lamper_eif3d <- residuals_annot$gene  %>%
+  mutate(eif3d_glu_dep=ifelse(id %in% lamper_et_al_S1$ensembl_gene_id, 'Bound', 'Unbound'),
+         eif3d_cm=ifelse(id %in% lamper_et_al_S2$ensembl_gene_id, 'Bound', 'Unbound')) %>%
+  mutate(eif3d=ifelse(eif3d_cm=='Bound'|eif3d_glu_dep=='Bound', 'Bound', 'Unbound'))
+
+p <- Residuals_gene_Lamper_eif3d %>%
+  ggplot(aes(DMSO, Tg)) +
+  geom_smooth() +
+  theme_camprot(border=FALSE) +
+  scale_size_manual(values=c(.5, .2), name='', guide=FALSE) +
+  scale_alpha_manual(values=c(.5, .2), name='', guide=FALSE) +
+  theme(strip.background=element_blank())
+
+print(p +
+        aes(colour=eif3d_glu_dep) +
+        geom_point(aes(alpha=eif3d_glu_dep, size=eif3d_glu_dep)) +
+        scale_colour_manual(values=c(get_cat_palette(7)[7], 'grey20'), name="5' eIF3D\nGlu. dep."))
+
+print(p +
+        aes(colour=eif3d_cm) +
+        geom_point(aes(alpha=eif3d_cm, size=eif3d_cm)) +
+        scale_colour_manual(values=c(get_cat_palette(7)[7], 'grey20'), name="5' eIF3D CM"))
+
+print(p +
+        aes(colour=eif3d) +
+        geom_point(aes(alpha=eif3d, size=eif3d)) +
+        scale_colour_manual(values=c(get_cat_palette(7)[7], 'grey20'), name="5' eIF3D"))
+
+print(p +
+        aes(colour=eif3d_cm) +
+        geom_point(aes(alpha=eif3d_cm, size=eif3d_cm)) +
+        scale_colour_manual(values=c(get_cat_palette(7)[7], 'grey20'), name="5' eIF3D CM") +
+        facet_wrap(~(ifelse(is.finite(distance_from_end), 'Signal/TM', 'No signal/TM'))))
+```
+
+
+
+
+```{r}
+p <- Residuals_gene_Lamper_eif3d %>%
+  ggplot(aes(residual)) +
+  stat_ecdf() +
+  theme_camprot(border=FALSE) +
+  scale_colour_manual(values=c(get_cat_palette(7)[7], 'grey20'), name='') +
+  theme(strip.background=element_blank())
+
+print(p + aes(colour=eif3d_cm))
+print(p + aes(colour=eif3d_glu_dep))
+print(p + aes(colour=eif3d))
+print(p + aes(colour=eif3d) + facet_wrap(~(ifelse(is.finite(distance_from_end), 'Signal/TM', 'No signal/TM'))))
+
+
+
+
+```
+OK, so the Lamper et al 5' eIF3D binding data agrees with the eCLIP data that binding of eIF3D is predictive of Tg-resistanct membrane localisation. This is observed regardless whether the RNA has a signal peptide/TM in the encoded polypeptide.
+
+
+Next, we want to identify the enriched functionailities in the outlier RNAs and those bound at the 5' cap by eIF3D and also the bound RNAs within the outliers. In all cases, we will focus separately on the complete set of RNAs and just those in the membrane (>50%) or not (<20%) in DMSO. In all cases, we will use the DMSO membrane localisation as our bias factor, since we expect the RNAs of interest to be bias towards more membrane localised RNAs and we want to take account of this. The exception is when we are considering eIF3D-bound against background of outliers only, where we expect no bias and therefore use straighforward hypogeometric test.
+```{r}
+all_go_genes_expanded <- readRDS('../../../../../1_external/10_GO/all_go_genes_expanded.rds')
+```
+
+```{r}
+library(goseq)
+```
+
+Plot +/- 3D bound Lamper et al or eCLIP vs membrane localisation in Control vs UPR activated.
+```{r}
+lamper_simplified <- Residuals_gene_Lamper_eif3d %>%
+  mutate(lamper_eif3d=(eif3d_cm=='Bound'|eif3d_glu_dep=='Bound')) %>%
+  dplyr::select(id, lamper_eif3d, DMSO, Tg, residual)
+
+eIF3d_eCLIP_simplified <- to_plot_eif3$gene %>%
+  dplyr::select(id, EIF3D_HepG2)
+
+combined_eif3d_residuals <- lamper_simplified %>%
+  merge(eIF3d_eCLIP_simplified, by='id') %>%
+  mutate(eif3d_bound_any=(EIF3D_HepG2==1 | lamper_eif3d))
+
+ p <- combined_eif3d_residuals %>%
+  ggplot(aes(DMSO, Tg, colour=eif3d_bound_any)) +
+  geom_point(aes(alpha=eif3d_bound_any, size=eif3d_bound_any), pch=16, size=1) +
+  geom_smooth(se=FALSE) +
+  theme_camprot(base_size=15, border=FALSE, base_family='sans') +
+  scale_colour_manual(values=c('grey30', get_cat_palette(7)[7]),
+                      name='eIF3d', labels=c('Unbound', 'Bound')) +
+  scale_size_manual(values=c(.2, .5), name='eIF3d', labels=c('Unbound', 'Bound')) +
+  scale_alpha_manual(values=c(.2, .5), name='eIF3d', labels=c('Unbound', 'Bound')) +
+  theme(strip.background=element_blank()) +
+  xlab('Membrane proportion Control') +
+  ylab('Membrane proportion UPR') +
+  theme(legend.position=c(0.5,1), legend.justification=c(0.5,1), legend.background=element_blank()) +
+  xlim(0,1) +
+  ylim(0,1)
+
+print(p)
+ggsave('../../../../../5_manuscript_figures/Figure_6/mem_proportions/any_eif3_mem_prop.png', width=3.5, height=3.5)
+ggsave('../../../../../5_manuscript_figures/Figure_6/mem_proportions/any_eif3_mem_prop.pdf', width=3.5, height=3.5)
+
+
+p2 <- p + annotate(geom='rect', xmin=0.5, ymin=0, xmax=1, ymax=1, alpha=0.25, fill='grey')
+print(p2)
+
+```
+Perform GO over-representation analysis
+```{r}
+dmso_localisation <- c('all', 'membrane', 'non_membrane')
+tests <- c('outlier', 'eif3d', 'both')
+
+goseq_results <- dmso_localisation %>% lapply(function(localisation){
+  if(localisation=='membrane'){
+    .data <- combined_eif3d_residuals %>% filter(DMSO>0.5)
+  } else if(localisation=='non_membrane'){
+    .data <- combined_eif3d_residuals %>% filter(DMSO<0.2)
+  } else{
+    .data <- combined_eif3d_residuals
+  }
+
+  go_res <- tests %>% lapply(function(test){
+    if(test=='outlier'){
+      target <- .data$residual>0.1
+      names(target) <- .data$id
+      bias <- .data$DMSO
+      pwf <- nullp(target, bias.data=bias)
+      results <- goseq(pwf, gene2cat=all_go_genes_expanded)
+    
+    } else if(test=='eif3d'){
+      target <- .data$eif3d_bound_any
+      names(target) <- .data$id
+      bias <- .data$DMSO
+      pwf <- nullp(target, bias.data=bias)
+      results <- goseq(pwf, gene2cat=all_go_genes_expanded)
+    
+    } else{
+      .data<- .data %>% filter(residual>0.1)
+      target <- .data$eif3d_bound_any
+      names(target) <- .data$id
+      bias <- .data$DMSO
+      pwf <- nullp(target, bias.data=bias)
+      
+      # ignore bias when considering eIF3D-bound against background of outliers only
+      results <- goseq(pwf, gene2cat=all_go_genes_expanded, method='Hypergeometric')
+    }
+
+    results <- results %>%
+      mutate(over_represented_pvalue=ifelse(
+        over_represented_pvalue==0, .Machine$double.xmin, over_represented_pvalue)) %>%
+      mutate(padj=p.adjust(over_represented_pvalue, method='BH'))
+
+    return(list('results'=results, 'pwf'=pwf))
+    })
+  
+  names(go_res) <- tests
+
+  return(go_res)
+  })
+
+names(goseq_results) <- dmso_localisation
+```
+
+
+
+
+Update the goseq results to include over-representation estimate and remove redundant go-terms from those significantly over-represented (FDR<5%)
+```{r}
+library(GO.db)
+
+goseq_results <- goseq_results %>% lapply(function(localisation){
+  localisation %>% lapply(function(test){
+    test$results_filtered <- test$results %>%
+      filter(padj<0.05) %>%
+      camprotR::estimate_go_overrep(test$pwf, all_go_genes_expanded) %>%
+      remove_redundant_go()
+    
+    return(test)
+  })
+})
+```
+
+
+
+
+
+Function to plot GO terms
+```{r}
+plot_go <- function(goseq_results, title){
+  x <- goseq_results %>%
+    arrange(desc(padj)) %>%
+    mutate(term=str_trunc(term, 50, side="right", ellipsis='[..]')) %>%
+    mutate(term_ontology=paste0(term, ' (', ontology, ')')) %>%
+    mutate(term_ontology=factor(term_ontology, levels=term_ontology))
+  
+  p <- x %>%
+    ggplot(aes(adj_overrep, term_ontology, fill=-log10(padj))) +
+    geom_bar(stat='identity') +
+    theme_camprot(base_size=15, border=FALSE) +
+    ylab('') +
+    xlab('Over-representation') +
+    scale_fill_continuous(limits=c(1, NA), high=get_cat_palette(1), low='grey', name='-log10(FDR)') +
+    geom_text(aes(label=numDEInCat), x=max(x$adj_overrep)*1.2, hjust=1) +
+    xlim(NA, max(x$adj_overrep)*1.2) +
+    theme(legend.title = element_text(size = 10), 
+               legend.text = element_text(size = 10),
+        legend.key.size = unit(0.75, "lines"))
+  
+  if(!missing(title)){
+    p <- p +
+      ggtitle(title) +
+      theme(plot.title=element_text(size=15))
+  }
+  
+  return(p)
+}
+```
+
+First, terms enriched in eIF3D-bound within the outliers. Just the rather vague organelle organization, which accounts for 20/226
+```{r}
+
+goseq_results$all$both$pwf$DEgenes %>% sum()
+goseq_results$all$both$results$numInCat  %>% max()
+goseq_results$all$both$results_filtered
+
+```
+
+What about eIF3D-bound within the membrane-localised outliers. Nothing...
+```{r}
+goseq_results$membrane$both$results %>% filter(padj<0.1)
+```
+
+What about outliers vs all other, regardless of localisation. EM and calcium binding stick out as most interesting to me.
+```{r}
+goseq_results$all$outlier$results_filtered
+
+n_features <- goseq_results$all$outlier$pwf$DEgenes %>% sum()
+print(n_features)
+
+goseq_results$all$outlier$results_filtered %>%
+  filter(numDEInCat>n_features/10) %>%
+  plot_go(sprintf('Outliers (%s)', n_features))
+
+```
+What about eIF3D-bound. OK so overall eIF3D is bound to lots of RNAs encoding chromatin binding & cell junction.
+```{r}
+n_features <- goseq_results$all$eif3d$pwf$DEgenes %>% sum()
+print(n_features)
+
+goseq_results$all$eif3d$results_filtered %>%
+  filter(numDEInCat>n_features/20, adj_overrep>2) %>%
+  top_n(wt=-padj, 12) %>%
+  plot_go(sprintf('eIF3D (%s)', n_features))
+```
+What about outliers in membranes. EM and calcium binding still stick out as most interesting to me.
+```{r}
+n_features <- goseq_results$membrane$outlier$pwf$DEgenes %>% sum()
+print(n_features)
+
+goseq_results$membrane$outlier$results_filtered
+
+goseq_results$membrane$outlier$results_filtered %>%
+  filter(numDEInCat>n_features/10) %>%
+  plot_go(sprintf('Outliers in membranes (%s)', n_features))
+
+goseq_results$non_membrane$outlier$results_filtered
+```
+And now eIF3D-bound in membranes. OK, so the majority are annotated with 'anatomical structure morphogenesis' ( The process in which anatomical structures are generated and organized. Morphogenesis pertains to the creation of form.). Actin binding/cytoskeleton organisation looks interesting to me.
+```{r, fig.height=8, fig.width=8}
+
+
+goseq_results$membrane$eif3d$results %>% filter(grepl('migration', term, ignore.case=TRUE))
+
+n_features <- goseq_results$membrane$eif3d$pwf$DEgenes %>% sum()
+print(n_features)
+
+goseq_results$membrane$eif3d$results_filtered
+
+p <- goseq_results$membrane$eif3d$results_filtered %>%
+  filter(padj<0.05, numDEInCat>(n_features/10)) %>%
+  remove_redundant_go() %>%
+  top_n(wt=adj_overrep, 10) %>% 
+  plot_go()
+
+print(p)
+
+ggsave('../../../../../5_manuscript_figures/Figure_6/go/eif3d_in_membranes.png', width=8, height=4)
+ggsave('../../../../../5_manuscript_figures/Figure_6/go/eif3d_in_membranes.pdf', width=8, height=4)
+```
+
+Let's look closer at the actin filament-base process/cytoskeleton protein binding. There are just 11 membrane-localised genes annotated as actin filament-base process binding and eIF3D-bound, and 11 for cytoskeleton protein binding
+```{r}
+
+actin_genes <- all_go_genes_expanded %>% filter(TERM=='actin filament-based process') %>% pull(ensembl_gene_id)
+cyt_genes <- all_go_genes_expanded %>% filter(TERM=='cytoskeletal protein binding')  %>% pull(ensembl_gene_id)
+cell_migration_genes <- all_go_genes_expanded %>% filter(TERM=='cell migration')  %>% pull(ensembl_gene_id)
+
+ 
+```
+
+
+Compare DMSO vs Tg membrane-localisation scatters for GO terms of interest
+```{r}
+p <- combined_eif3d_residuals %>%
+  mutate(actin=ifelse(id %in% actin_genes, 'Actin filament-\nbased process', 'Other')) %>%
+  mutate(cyt=ifelse(id %in% cyt_genes, 'Cytoskeletal\nprotein binding', 'Other')) %>%
+  mutate(cell_migration=ifelse(id %in% cell_migration_genes, 'Cell migration', 'Other')) %>%
+  mutate(cm_eif3d=paste(cell_migration, eif3d_bound_any, sep=', ')) %>%
+  ggplot(aes(DMSO, Tg)) +
+  geom_smooth() +
+  theme_camprot(border=FALSE) +
+  scale_size_manual(values=c(.2,.5), name='', guide=FALSE) +
+  scale_alpha_manual(values=c(.2,.5), name='', guide=FALSE) +
+  theme(strip.background=element_blank())
+
+print(p +
+        aes(colour=eif3d_bound_any) +
+        geom_point(aes(alpha=eif3d_bound_any, size=eif3d_bound_any)) +
+        scale_colour_manual(values=c('grey20', get_cat_palette(3)), name="5' eIF3D") +
+        facet_wrap(~cell_migration))
+
+
+
+```
+
+
+

@@ -1,0 +1,205 @@
+---
+title: "Model coefficients"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we examine the selected feature and their coefficients
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+
+```{r}
+library(camprotR)
+library(tidyverse)
+library(ggrepel)
+library(biomaRt)
+```
+
+Read in coefficients from model in previous notebook and subset to non-zero.
+```{r}
+coefficients <- readRDS('./out/lasso_coefficients.rds')
+sum(abs(coefficients$coef)>0)
+
+coefficients %>% filter(abs(coef)>0)
+coefficients[grepl('DDX', rownames(coefficients)),,drop=FALSE]
+```
+
+Plot the coefficients for sequence features
+```{r}
+
+seq_feature_coefs <- coefficients %>%
+  dplyr::filter(abs(coef)>0) %>%
+  tibble::rownames_to_column('feature') %>%
+  filter(!grepl('_', feature), !feature %in% c('Cytosol', 'Granule', 'Membrane', 'Nucleus')) %>%
+  filter(feature!='(Intercept)') %>%
+  separate(feature, into=c('region', 'sequence'), remove=FALSE, sep='\\.')
+         
+seq_feature_coefs %>% dplyr::filter(grepl('(UAG|UGA|UAA)', sequence))
+       
+nuc_freq <- Biostrings::oligonucleotideFrequency(Biostrings::RNAStringSet(seq_feature_coefs$sequence), width=1, as.prob=TRUE)
+
+
+p <- cbind(seq_feature_coefs, nuc_freq) %>%
+  mutate(label=ifelse(abs(coef)>0.001, sequence, '')) %>%
+  mutate(region=factor(recode(region,
+                       'utr5'="5' UTR",
+                       'utr3'="3' UTR",
+                       'coding'="coding"),
+                       levels=c("5' UTR", 'coding', "3' UTR"))) %>%
+  mutate(AU=A+U, sequence_length=nchar(sequence)) %>%
+  ggplot(aes(100*AU, coef, fill=coef>0, colour=coef>0)) +
+  geom_point(size=1.5, pch=21, colour='grey20') +
+  geom_text_repel(aes(label=label),
+                  point.padding=0.25,
+                  min.segment.length=0, size=3.5,
+                  segment.alpha=0.5) +
+  theme_camprot(base_family='sans', border=FALSE, base_size=15) +
+  xlab('AU content (%)') +
+  ylab('Coefficient') +
+  geom_hline(yintercept=0, linetype=2, size=0.25) +
+  facet_wrap(~region) +
+  theme(strip.background=element_blank()) +
+  scale_fill_manual(values=get_cat_palette(4)[3:4], guide=FALSE) +
+  scale_colour_manual(values=get_cat_palette(4)[3:4], guide=FALSE)
+
+
+print(p)
+ggsave('../../../../../5_manuscript_figures/Figure_5/model/kmers.png', height=3.5, width=7)
+ggsave('../../../../../5_manuscript_figures/Figure_5/model/kmers.pdf', height=3.5, width=7)
+```
+
+
+
+
+
+```{r}
+proportions <- readRDS('../5_relocalisation/out/proportions_annot.rds')
+
+major_loc_dmso <- proportions %>% lapply(function(x){
+  x %>%
+    filter(condition=='DMSO') %>%
+    #tibble::column_to_rownames('id') %>%
+    mutate(Nucleus=Nucleus+Nucleolus) %>%
+    dplyr::select(id, Cytosol, Granule, Nucleus, Membrane) %>%
+    pivot_longer(-id) %>%
+    #filter(value>0.5) %>%
+    group_by(id) %>%
+    slice_max(order_by=value, n=1, with_ties=FALSE) %>%
+    tibble::column_to_rownames('id') %>%
+    setNames(c('major_localisation', 'proportion'))
+  })
+```
+
+```{r}
+
+granule_relocalisation <- readRDS('./out/transcript_features.rds') %>%
+  dplyr::select(diff, conservative_signal_tm, transcript_length, IRES) %>%
+  merge(major_loc_dmso$transcript, by='row.names')
+
+```
+
+
+
+
+
+
+```{r}
+ensembl <- useEnsembl(biomart="ensembl", version=102, dataset="hsapiens_gene_ensembl")
+
+transcript_lengths <- getBM(attributes=c('ensembl_transcript_id',
+                                         'transcript_length'),
+                                         mart = ensembl,
+                     filters = 'ensembl_transcript_id',
+                     values=unique(granule_relocalisation$Row.names))
+
+```
+
+
+
+Plot codon coefficients
+```{r}
+
+codon_coefs <- coefficients %>%
+  dplyr::filter(abs(coef)>0) %>%
+  tibble::rownames_to_column('feature') %>%
+  filter(grepl('codon|dinuc|wobble', feature)) %>%
+  separate(feature, into=c('region', 'sequence'), remove=FALSE, sep='_') %>%
+  mutate(region=factor(recode(Hmisc::capitalize(region),
+                       'Codondinuc'='Dinucleotide'),
+                       levels=rev(c("Codon", "Dinucleotide", "Wobble")))) %>%
+  arrange(region, coef) %>%
+  mutate(region_sequence=paste(region, sequence, sep=': ')) %>%
+  mutate(region_sequence=factor(region_sequence, level=region_sequence))
+
+
+
+
+p <- codon_coefs  %>%
+  ggplot(aes(coef, region_sequence, fill=coef>0)) +
+  geom_bar(stat='identity') +
+  theme_camprot(border=FALSE, base_size=15, base_family='sans') +
+  xlab('Coefficient') +
+  ylab('') +
+  theme(strip.background=element_blank()) +
+  scale_fill_manual(values=get_cat_palette(4)[3:4], guide=FALSE)
+
+x <- 0
+for(region_count in table(codon_coefs$region)[1:length(unique(codon_coefs$region))-1]){
+  p <- p + geom_hline(yintercept = x + region_count + 0.5, size=0.5, colour='grey', linetype=2)
+  
+  x <- x + region_count
+}
+
+print(p)
+ggsave('../../../../../5_manuscript_figures/Figure_5/model/codon.png', width=5, height=3.5)
+ggsave('../../../../../5_manuscript_figures/Figure_5/model/codon.pdf', width=5, height=3.5)
+```
+
+
+
+Length and RBP feature coefficients
+```{r}
+coefficients_rbp_length <- coefficients %>%
+  dplyr::filter(abs(coef)>0) %>%
+  tibble::rownames_to_column('feature') %>%
+  filter(grepl('_', feature)) %>%
+  filter(!grepl('(codon|wobble)', feature)) %>%
+  mutate(type=ifelse(grepl('length', feature), 'length', 'RBP')) %>%
+  arrange(coef) %>%
+  mutate(feature=gsub('(log10_|_length)', '', feature)) %>%
+  mutate(feature=gsub(':', ': ', feature)) %>%
+  mutate(feature=gsub('_', '-', feature)) %>%
+  mutate(feature=gsub('utr3', "3'UTR length", feature)) %>%
+  mutate(feature=gsub('utr5', "5'UTR length", feature)) %>%
+  mutate(feature=gsub('transcript', "Transcript length", feature)) %>%
+  mutate(feature=gsub('coding', "Coding length", feature)) %>%
+  mutate(feature=factor(feature, level=feature))
+
+
+p <- coefficients_rbp_length[coefficients_rbp_length$type=='length',]  %>%
+  ggplot(aes(coef, feature, fill=coef>0)) +
+  geom_bar(stat='identity') +
+  theme_camprot(border=FALSE, base_size=15, base_family='sans') +
+  xlab('Coefficient') +
+  ylab('') +
+  theme(strip.background=element_blank()) +
+  scale_fill_manual(values=get_cat_palette(4)[3:4], guide=FALSE)
+
+
+print(p)
+ggsave('../../../../../5_manuscript_figures/Figure_5/model/length.png', width=5, height=3.5)
+ggsave('../../../../../5_manuscript_figures/Figure_5/model/length.pdf', width=5, height=3.5)
+
+
+p2 <- p %+% coefficients_rbp_length[coefficients_rbp_length$type=='RBP',]
+print(p2)
+ggsave('../../../../../5_manuscript_figures/Figure_5/model/rbp.png', width=5, height=3.5)
+ggsave('../../../../../5_manuscript_figures/Figure_5/model/rbp.pdf', width=5, height=3.5)
+```
+

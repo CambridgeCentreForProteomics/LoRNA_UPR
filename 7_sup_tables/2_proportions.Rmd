@@ -1,0 +1,137 @@
+---
+title: "Make supplementary tables for quantifications"
+output: html_notebook
+---
+
+```{r}
+
+library(tidyverse)
+library(MSnbase)
+library(writexl)
+```
+
+```{r}
+all_datasets <- readRDS('../3_rna/notebooks/1_dlorna/2_lorna/1_data_processing/out/all_datasets.rds')
+proportions <- readRDS('../3_rna/notebooks/1_dlorna/2_lorna/3_proportional_localisation/results/proportions.rds')
+signal_tm <- readRDS('../1_external/12_signal_TM/tm_signal_annotations.rds')
+
+proportions_s <- readRDS('../3_rna/notebooks/2_slorna/4_proportional_localisation/results/proportions.rds')
+all_datasets_s <- readRDS('../3_rna/notebooks/2_slorna/2_data_processing/out/all_datasets.rds')
+
+```
+
+
+```{r}
+proportion_data <- proportions %>% names() %>% lapply(function(level){
+  
+
+  proportions_at_level <- unique(proportions[[level]]$condition) %>% lapply(function(cond){
+    
+    if(level=='gene'){
+
+      p <- proportions[[level]] %>% 
+        filter(condition==cond) %>%
+        merge(fData(all_datasets[[level]][[cond]]$corrected), by.x='id', by.y='row.names', all.x=TRUE) %>%
+        merge(signal_tm[[level]], by.x='id', by.y='ensembl_gene_id', all.x=TRUE) %>%
+        select(ensembl_gene_id=id,
+               gene_name=external_gene_name,
+               gene_biotype,
+               markers,
+               Nucleus,
+               Nucleolus,
+               Cytosol,
+               Membrane,
+               Granule,
+               sd_Nucleus,
+               sd_Nucleolus,
+               sd_Cytosol,
+               sd_Membrane,
+               sd_Granule,
+               signal_or_TM=conservative_signal_tm
+)
+    } else{
+      p <- proportions[[level]] %>%
+        filter(condition==cond) %>%
+        merge(fData(all_datasets[[level]][[cond]]$corrected), by.x='id', by.y='row.names', all.x=TRUE) %>%
+        merge(signal_tm[[level]], by.x='id', by.y='ensembl_transcript_id', all.x=TRUE) %>%
+        select(ensembl_transcript_id=id,
+               ensembl_gene_id,
+               gene_name=external_gene_name,
+               gene_biotype,
+               transcript_biotype,
+               transcript_length,
+               markers,
+               Nucleus,
+               Nucleolus,
+               Cytosol,
+               Membrane,
+               Granule,
+               sd_Nucleus,
+               sd_Nucleolus,
+               sd_Cytosol,
+               sd_Membrane,
+               sd_Granule,
+               signal_or_TM=conservative_signal_tm)
+    }
+    
+    return(p)
+  })
+  
+  names(proportions_at_level) <- unique(proportions[[level]]$condition)
+  return(proportions_at_level)
+  })
+
+names(proportion_data) <- names(proportions)
+```
+
+
+
+```{r}
+
+
+proportions_s_annot <- proportions_s %>%
+  merge(fData(all_datasets_s$gene$corrected)[,c('gene_biotype', 'external_gene_name', 'markers')], by.x='id', by.y='row.names') %>%
+  select(ensembl_gene_id=id,
+         gene_name=external_gene_name,
+         gene_biotype,
+         markers,
+         Cytosol,
+         sd_Cytosol,
+         Membrane,
+         sd_Membrane,
+         Mitochondrion,
+         sd_Mitochondrion)
+
+```
+
+
+```{r}
+non_signal_tm_mem <- proportion_data$gene %>% lapply(function(x) x %>% filter(Membrane>0.35, !signal_or_TM))
+```
+
+```{r}
+
+
+feature_data_to_write <- list('gene_control'=proportion_data$gene$DMSO,
+                              'gene_upr'=proportion_data$gene$Tg,
+                              'transcript_control'=proportion_data$transcript$DMSO,
+                              'transcript_upr'=proportion_data$transcript$Tg,
+                              's_gene_control'=proportions_s_annot,
+                              'mem_no_signal_tm_control'=non_signal_tm_mem$DMSO,
+                              'mem_no_signal_tm_upr'=non_signal_tm_mem$Tg)
+
+write_xlsx(
+  feature_data_to_write,
+  path = "./LoRNA_proportions.xlsx",
+  col_names = TRUE,
+  format_headers = TRUE,
+  use_zip64 = FALSE
+)
+
+```
+
+
+
+
+
+

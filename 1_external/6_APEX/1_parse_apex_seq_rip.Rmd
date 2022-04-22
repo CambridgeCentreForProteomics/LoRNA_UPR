@@ -1,0 +1,50 @@
+---
+title: "Parse APEX data"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we parse data from APEX-RIP & APEX-Seq publications
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+```{r}
+library(tidyverse)
+```
+
+```{r}
+getApexRip <- function(infile, q_threshold=0.01, fold_threshold=1){
+  apex <- read.table(infile, header=TRUE, row.names=1, stringsAsFactors=FALSE)
+  apex <- apex %>% filter(status=="OK") %>% separate(gene_id, into=c("gene_id", "suffix"))
+  
+  apex$log2.fold_change. <- as.numeric(as.character(apex$log2.fold_change.))
+  apex$sig <- (apex$q_value<q_threshold & apex$log2.fold_change.>fold_threshold)
+  
+  return(apex)
+}
+
+apex_rip <- NULL
+apex_rip$cyt <- getApexRip("./GSE106493/GSE106493_NES-APEX2.gene_exp.diff.gz", 0.01, 1)
+apex_rip$nuc <- getApexRip("./GSE106493/GSE106493_NLS-APEX2.gene_exp.diff.gz", 0.01, 1)
+apex_rip$er <- getApexRip("./GSE106493/GSE106493_KDEL-HRP.gene_exp.diff.gz", 0.01, 3)
+
+apex_rip %>% saveRDS('./out/apex_rip.rds')
+```
+
+```{r}
+apex_seq_fazal <- read.delim('./GSE116008_APEX_seq_deseq2_all_data_polyA_hek293t.txt.gz') %>%
+  gather(key='sample', value='value', -c(Ensembl_Gene, Common_Gene)) %>%
+  separate(sample, into=c('localisation', 'type'), sep='\\.18') %>%
+  mutate(type=recode(type, 'C'='l2fc', 'C.P'='p.value')) %>%
+  spread(key=type, value=value) %>%
+  mutate('FDR'=p.adjust(p.value, method='BH'))
+
+apex_seq_fazal %>% saveRDS('./out/apex_seq_fazal.rds')
+```
+
+

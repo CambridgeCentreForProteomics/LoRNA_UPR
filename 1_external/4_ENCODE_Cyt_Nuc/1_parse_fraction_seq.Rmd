@@ -1,0 +1,152 @@
+---
+title: "Parse stress granule data"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we parse ENCODE Cyt/Nuc fractionation RNA-Seq data for 9 cell lines
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+```{r}
+library(tidyverse)
+library(camprotR)
+library(biomaRt)
+```
+
+```{r}
+ensembl <- useEnsembl(biomart="ensembl", dataset="hsapiens_gene_ensembl")
+
+gene2biotype <- getBM(attributes=c('ensembl_gene_id', 'gene_biotype'), mart = ensembl)
+```
+
+Read in the details for the experiments we want to use.
+```{r}
+exp_details <- read.delim('./encode_exp_details.tsv', skip=1)
+```
+
+Find the infiles. Note that these are not part of the repo and need to be downloaded as per instructions in ./README
+```{r}
+infiles <- Sys.glob('./ENCFF*.tsv')
+names(infiles) <- gsub('.tsv', '', basename(infiles))
+```
+
+Define map from infile to sample description
+```{r}
+sample_desc <- names(infiles) %>% lapply(function(x){
+  
+  file_details <- exp_details %>% filter(grepl(x, Files))
+  if(nrow(file_details)>1){
+    print(file_details)
+    stop('Should only be one row!')
+  }
+  
+  if(nrow(file_details)==0){
+    return(NA)
+  }
+  
+  sample_desc <- file_details$Biosample.summary
+  return(sample_desc)
+}) %>% unlist()
+
+infile2desc <- data.frame('sample'=names(infiles), 'desc'=sample_desc) %>%
+  separate(desc, into=c('cell_line', 'fraction'), sep=' ', remove=FALSE) %>%
+  mutate(fraction=replace_na(fraction, 'total'))
+
+infile2desc <- infile2desc %>% filter(!is.na(desc))
+
+print(infile2desc)
+```
+Read in data for each cell line
+```{r}
+cell_lines <- unique(infile2desc$cell_line)
+
+cyt_nuc_ratios <- vector('list', length=length(cell_lines))
+names(cyt_nuc_ratios) <- cell_lines
+
+for(cl in cell_lines){
+  print(cl)
+  obj <- infile2desc %>% filter(cell_line==cl)
+  
+  quant <- obj$sample %>% lapply(function(x) read.delim(infiles[[x]]))
+  names(quant) <- obj$sample
+    
+  nrows <- quant %>% lapply(nrow) %>% unlist() %>% unique()
+  if(length(nrows)>1){
+    quant %>% lapply(nrow)
+    stop('quant list objects should all have the same number of rows')
+  }
+  
+  tpm_quant <- quant %>%
+    names() %>%
+    lapply(function(id){
+      
+      data <- quant[[id]] 
+      data[[id]] <- data$TPM
+  
+      data[,c(id, 'gene_id')] %>%
+        tibble::column_to_rownames('gene_id')
+    }) %>% do.call(what='cbind')
+  
+  fractions_quant_tpm <- tpm_quant[rowSums(tpm_quant)>0,] %>%
+    tibble::rownames_to_column('gene_id') %>%
+    pivot_longer(cols=-gene_id, names_to='sample', values_to='TPM') %>%
+    merge(infile2desc, by='sample') %>%
+    group_by(gene_id, desc, cell_line, fraction) %>%
+    summarise(TPM=mean(TPM)) %>%
+    ungroup() %>%
+    dplyr::select(gene_id, fraction, TPM) %>%
+    pivot_wider(names_from=fraction, values_from=TPM) %>%
+    separate(gene_id, into='ensembl_gene_id', sep='\\.') %>%
+    merge(gene2biotype, by='ensembl_gene_id')
+  
+  tpm_ratios <- fractions_quant_tpm %>%
+    mutate(cyt_nuc_ratio=cytosolic/nuclear,
+           'cell_line'=cl) 
+  
+  cyt_nuc_ratios[[cl]] <- tpm_ratios
+}
+
+```
+Combine all the cell lines into a single
+```{r}
+cyt_nuc_ratios <- do.call('rbind', cyt_nuc_ratios)
+```
+
+Check the distribution of ratios per cell line
+```{r}
+cyt_nuc_ratios %>%
+  filter(gene_biotype %in% c('lncRNA', 'protein_coding')) %>%
+  ggplot(aes(log2(cyt_nuc_ratio), colour=cell_line)) +
+  geom_density() +
+  theme_camprot() +
+  facet_wrap(~gene_biotype)
+```
+
+Obtain the cyt/nuc ratios
+```{r}
+cyt_nuc_ratios <- cyt_nuc_ratios %>%
+  dplyr::select(gene_biotype, cyt_nuc_ratio, cell_line, ensembl_gene_id) %>% 
+  filter(is.finite(cyt_nuc_ratio), cyt_nuc_ratio>0) %>%
+  pivot_wider(names_from=cell_line, values_from=cyt_nuc_ratio) %>%
+  tibble::column_to_rownames('ensembl_gene_id')
+
+mean <- cyt_nuc_ratios %>% dplyr::select(-gene_biotype) %>% rowMeans(na.rm=TRUE)
+sd <- cyt_nuc_ratios %>% dplyr::select(-gene_biotype) %>% apply(MARGIN=1, FUN = function(x) sd(x[is.finite(x)]))
+
+cyt_nuc_ratios$n <- rowSums(!is.na(cyt_nuc_ratios))
+cyt_nuc_ratios$mean <- mean
+cyt_nuc_ratios$sd <- sd
+
+```
+
+Save for use in analysis notebooks
+```{r}
+saveRDS(cyt_nuc_ratios, './out/cyt_nuc_ratios.rds')
+```
+

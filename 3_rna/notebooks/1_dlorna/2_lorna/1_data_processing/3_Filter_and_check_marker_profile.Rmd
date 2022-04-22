@@ -1,0 +1,304 @@
+---
+title: "Inspect the marker set separation"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we filter the visually inspect the marker set separation using linear profile plots,
+  PCA and t-SNE.
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+```{r}
+library(tidyverse)
+library(camprotR)
+library(pRoloc)
+library(pRolocdata)
+library(pRolocExt)
+library(biobroom)
+library(naniar)
+```
+
+Read in transcript and gene-level data
+```{r}
+gene_quant_res <- readRDS("./out/gene_quant_lorna_res.rds")
+
+gene_quant_sirv_res <- readRDS("./out/gene_quant_fractions_sirv_corrected.rds")
+
+transcript_quant_res <- readRDS("./out/transcript_quant_lorna_res.rds")
+
+transcript_quant_sirv_res <- readRDS("./out/transcript_quant_fractions_sirv_corrected.rds")
+
+
+```
+
+Checking missing values and settle on thresholds for min expression 
+```{r}
+
+
+DMSO_gene_quant <- gene_quant_res[,pData(gene_quant_res)$condition=='DMSO']
+pData(DMSO_gene_quant)$sample <- NULL
+
+DMSO_gene_quant_long <- tidy(DMSO_gene_quant, addPheno=TRUE) %>%
+  merge(fData(DMSO_gene_quant)[,c('gene_biotype','gene_biotype_filtered')], by.x='protein', by.y='row.names')
+
+colnames(DMSO_gene_quant_long)[c(1, 7)] <- c('gene', 'TPM')
+
+head(DMSO_gene_quant_long)
+```
+
+```{r, fig.height=10, fig.width=10}
+
+
+DMSO_gene_quant_long %>%
+  ggplot(aes(log2(TPM),
+             group=interaction(gene_biotype_filtered, fraction),
+             colour=gene_biotype_filtered)) +
+  geom_density() +
+  facet_grid(gene_biotype_filtered~replicate) +
+  theme_camprot(base_size=15) +
+  theme(legend.position='none') +
+  geom_vline(xintercept=log2(0.5), colour='grey', linetype=2)
+```
+OK, so TPM 0.5 seems to be approximately the point between the two distributions of protein_coding genes. Note that lncRNA are largely below this point.
+
+Next, we consider the missing values
+```{r}
+
+
+DMSO_gene_quant_mean_threshed <- DMSO_gene_quant[rowMeans(exprs(DMSO_gene_quant))>0.5,]
+
+DMSO_gene_quant_mean_threshed_quant_exprs <- data.frame(exprs(DMSO_gene_quant_mean_threshed))
+
+DMSO_gene_quant_mean_threshed_quant_exprs[DMSO_gene_quant_mean_threshed_quant_exprs==0] <- NA
+
+dim(DMSO_gene_quant_mean_threshed_quant_exprs)
+sum(is.na(DMSO_gene_quant_mean_threshed_quant_exprs))
+
+p <- naniar::gg_miss_upset(DMSO_gene_quant_mean_threshed_quant_exprs, nsets=10, nintersects=20,
+                           sets=rev(paste0(colnames(DMSO_gene_quant_mean_threshed_quant_exprs), '_NA')),
+                           keep.order=TRUE)
+print(p)
+
+for(r in unique(pData(DMSO_gene_quant_mean_threshed)$replicate)){
+  
+  DMSO_gene_quant_exprs <- data.frame(exprs(DMSO_gene_quant_mean_threshed[,pData(DMSO_gene_quant_mean_threshed)$replicate==r]))
+  
+  DMSO_gene_quant_exprs[DMSO_gene_quant_exprs==0] <- NA
+
+  p <- naniar::gg_miss_upset(DMSO_gene_quant_exprs, nsets=10, nintersects=20,
+                             sets=rev(paste0(colnames(DMSO_gene_quant_exprs), '_NA')),
+                             keep.order=TRUE)
+  print(p)
+  
+  
+  #repeat for just lncRNAs
+  DMSO_gene_quant_lncRNA_exprs <- data.frame(exprs(DMSO_gene_quant_mean_threshed[
+    fData(DMSO_gene_quant_mean_threshed)$gene_biotype=='lncRNA',
+    pData(DMSO_gene_quant_mean_threshed)$replicate==r]))
+  
+  DMSO_gene_quant_lncRNA_exprs[DMSO_gene_quant_lncRNA_exprs==0] <- NA
+
+  p <- naniar::gg_miss_upset(DMSO_gene_quant_lncRNA_exprs, nsets=10, nintersects=20,
+                             sets=rev(paste0(colnames(DMSO_gene_quant_lncRNA_exprs), '_NA')),
+                             keep.order=TRUE)
+  print(p)
+}
+
+```
+
+```{r}
+zero_counts <- DMSO_gene_quant_mean_threshed %>%
+  tidy(addPheno=TRUE) %>%
+  group_by(replicate, protein) %>%
+  summarise(zeros=sum(value==0)) %>%
+  group_by(replicate, zeros) %>%
+  tally()
+
+zero_counts %>%
+  filter(zeros>0) %>%
+  ggplot(aes(zeros, n)) +
+  geom_bar(stat='identity') +
+  facet_wrap(~replicate) + theme_camprot()
+
+```
+OK, so if we remove genes with average TPM < 0.5, within each replicate, the most frequent pattern for zero abundance is one or two fraction. Note that non-zero in just fractions 4 & 5 or 4,5 & 6 is also observed for ~30-40 genes. These are likely lowly expressed, exclusively nuclear. 
+
+We will use a threshold of mean abundance > 0.5 TPM and present in at least 3/8 fractions
+
+```{r}
+uncorrected_datasets <- list('gene' = gene_quant_res, 'transcript' = transcript_quant_res)
+corrected_datasets <- list('gene' = gene_quant_sirv_res, 'transcript' = transcript_quant_sirv_res)
+
+#filter the uncorrected datasets
+uncorrected_datasets <- uncorrected_datasets %>% lapply(function(quant){
+
+    conditions <- unique(pData(quant)$condition)
+    
+    split_data <- vector('list', length=length(conditions))
+    
+    names(split_data) <- conditions
+    
+    for(condition in conditions){
+
+      split_data[[condition]] <- quant[,pData(quant)$condition == condition]
+      
+      split_data[[condition]] <- split_data[[condition]][(
+        rowMeans(exprs(split_data[[condition]]))>0.5 &
+          rowMeans(exprs(split_data[[condition]])!=0) >= 3/8),]
+        
+      split_data[[condition]] <- split_data[[condition]] %>%
+        filterNA()
+      
+      # row sum normalise per replicate 
+      for(rep in unique(pData(split_data[[condition]])$replicate)){
+        rep_match <- pData(split_data[[condition]])$replicate==rep
+        
+        unnorm <- exprs(split_data[[condition]])[,rep_match]
+        
+        norm <- t(apply(unnorm, 1, function(x){
+          
+          norm_x <- x/sum(x, na.rm=TRUE)
+          norm_x[x==0] <- 0
+          return(norm_x)
+          }))
+        
+        exprs(split_data[[condition]])[,rep_match] <- norm
+        }
+      
+      }
+    split_data
+    })
+
+
+all_datasets <- uncorrected_datasets
+
+# subset the corrected datasets to the features retained in the uncorrected dataset filtering
+for(level in names(uncorrected_datasets)){
+    for(condition in names(uncorrected_datasets[[level]])){
+      print(paste(condition, level, collapse=' - '))
+      
+      uncorrected_quant <- uncorrected_datasets[[level]][[condition]]
+
+      all_datasets[[level]][[condition]] <- list('vector', length=2)
+      names(all_datasets[[level]][[condition]]) <- c('uncorrected', 'corrected')
+      
+      all_datasets[[level]][[condition]][['uncorrected']] <- uncorrected_quant
+      
+      corrected_quant <- corrected_datasets[[level]]
+      corrected_quant <- corrected_quant[,pData(corrected_quant)$condition == condition]
+      
+      corrected_quant <- corrected_quant[rownames(uncorrected_quant),]
+      
+      # per-replicate sum-normalisation
+      for(rep in unique(pData(corrected_quant)$replicate)){
+        rep_match <- pData(corrected_quant)$replicate==rep
+        
+        unnorm <- exprs(corrected_quant)[,rep_match]
+        
+        norm <- t(apply(unnorm, 1, function(x){
+          
+          norm_x <- x/sum(x, na.rm=TRUE)
+          #print(x)
+          #print(norm_x)
+          norm_x[x==0] <- 0
+          #print(norm_x)
+          #stop()
+          return(norm_x)
+          }))
+        
+        exprs(corrected_quant)[,rep_match] <- norm
+      }
+
+      print(dim(uncorrected_quant))          
+      print(dim(corrected_quant))          
+      
+      all_datasets[[level]][[condition]][['corrected']] <- corrected_quant
+  }
+}
+
+remove(uncorrected_datasets)
+remove(corrected_datasets)
+
+
+```
+Before we proceed to semi-supervised clustering, let's inspect the marker set profiles. 
+```{r}
+#get order for Control
+.data <- all_datasets$gene$DMSO$corrected %>%
+    filterNA()
+  
+.data <- .data[rowSums(exprs(.data))>0,]
+
+.data <- .data %>%
+  normalise('sum')
+
+hc <- mrkHClust(.data, plot = FALSE)
+mm <- getMarkerClasses(.data)
+ord <- levels(factor(mm))[order.dendrogram(hc)]
+
+  
+for(level in names(all_datasets)){
+  for(condition in names(all_datasets[[level]])){
+    for(corrected in names(all_datasets[[level]][[condition]])){
+  
+      .data <- all_datasets[[level]][[condition]][[corrected]]
+      
+      #colnames(.data) <- 1:10
+      hc <- mrkHClust(.data, plot = FALSE)
+      mm <- getMarkerClasses(.data)
+      
+      fmat <- mrkConsProfiles(.data)
+      
+      p <- plotConsProfiles(fmat, order = ord, plot=FALSE) +
+        scale_fill_continuous(name='Sum norm.\nintensity',
+                              low = "white", high=get_cat_palette(1)) +
+        scale_x_discrete(labels=pData(.data)$fraction) +
+        ggtitle(paste(condition, level, corrected, collapse=' - ')) +
+        theme_camprot(base_size=15) +
+        xlab('') +
+        geom_vline(xintercept=8.5) +
+        geom_vline(xintercept=16.5)
+
+      print(p)
+    }
+  }
+}
+
+
+```
+
+
+
+
+
+PCA plots 
+```{r, fig.height=6, fig.width=6}
+for(level in names(all_datasets)){
+  for(condition in names(all_datasets[[level]])){
+    for(corrected in names(all_datasets[[level]][[condition]])){
+      .data <-all_datasets[[level]][[condition]][[corrected]]
+    
+      .data %>% plot2D(cex=1, col=get_cat_palette(5))
+      addLegend(.data, col=get_cat_palette(5))
+      
+      title(paste(condition, level, corrected, collapse=' - '))
+      
+      .data %>% plot2D(cex=1, col=get_cat_palette(5), dims=c(3,4))
+      addLegend(.data , col=get_cat_palette(5))
+      title(paste(condition, level, corrected, collapse=' - '))
+    }
+  }
+}
+
+```
+
+```{r}
+saveRDS(all_datasets, './out/all_datasets.rds')
+```
+

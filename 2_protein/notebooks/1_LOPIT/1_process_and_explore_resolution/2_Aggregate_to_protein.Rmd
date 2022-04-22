@@ -1,0 +1,387 @@
+---
+title: "Summarise from PSM to protein"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we impute missing values, remove outlier PSMs and aggregate to protein-level
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontfamily: mathpazo
+fontsize: 11pt
+---
+
+Load libraries
+```{r setup, message=FALSE}
+
+#### Load packages ####
+library(camprotR)
+library(OptProc)
+library(ggplot2)
+library(tidyverse)
+library(MSnbase)
+library(pRoloc)
+```
+
+Read in the psm level data
+```{r}
+psm_res <- readRDS('../../out/psm_res.rds')
+```
+
+For imputation, we will use the 'sn-knn' method in `OptProc::imputeOptProc`. This involves:
+
+1. Row sum normalising the `exprs` matrix
+2. Performing knn imputation (with k=10 here)
+3. 'De-normalising' the `exprs` matrix.
+
+```{r}
+
+psm_res_imputed <- psm_res %>%
+  lapply(function(x){
+    x %>%
+      filterNA(pNA=2/10) %>%
+      imputeOptProc(method='sn-knn', k=10, verbose=FALSE)
+})
+```
+
+
+Below, we detect PSM outliers by calculating the euclidean distance between all pairs of PSMs for a given protein. Each PSM is then summarised to the median distance to all other PSMs. Where this is above a chosen threshold, the PSM is discarded as an outlier.
+
+First, we obtain the median distances for each PSM to the other PSMs for the same master protein
+
+```{r}
+source('../../../R/psm_outlier_detection.R')
+
+psm_distances <- psm_res_imputed %>%
+  lapply(detect_tmt_psm_outliers)
+```
+
+Next, a few plots to explore how the distances relate to PSM features we expect to be associated with outlier PSMs. Most importantly, the co-isolation, Delta score (difference between top possible spectrum matches) & average reporter SN. We will also consider the ion charge, the Delta mass (difference from expected mass), SPS matches, and the number of proteins the peptide could be assigned to
+```{r, fig.height=7, fig.width=7}
+all_psm_distances <- psm_distances %>%
+  do.call(what='rbind') %>%
+  tibble::rownames_to_column('rep') %>%
+  separate(rep, into=c('rep', NA)) %>%
+  mutate(binned_median_distance=Hmisc::cut2(median_distance, cuts=c(seq(0,0.3,0.05), 1)))
+
+p <- all_psm_distances %>%
+  ggplot(aes(binned_median_distance, Isolation.Interference.in.Percent)) +
+  geom_boxplot() +
+  theme_camprot() +
+  theme(axis.text.x=element_text(angle=45, vjust=1, hjust=1)) +
+  xlab('Median distance') +
+  facet_wrap(~rep)
+
+print(p)
+
+print(p + aes(y=Delta.Score))
+print(p + aes(y=log10(Average.Reporter.SN)))
+print(p + aes(y=Charge))
+print(p + aes(y=abs(Delta.M.in.ppm)))
+print(p + aes(y=SPS.Mass.Matches.in.Percent))
+```
+
+OK, so as expected, PSMs with median distances have:
+- Higher co-isolation
+- Lower Delta score
+- Lower average SN
+
+They also have:
+- No difference in charge
+- Slightly larger Delta Mass
+- Slightly fewer SPS matches
+
+
+
+We will use a threshold of 0.2 here.
+```{r}
+p <- all_psm_distances %>%
+  ggplot(aes(median_distance, colour=rep)) +
+  geom_density() +
+  theme_camprot(base_size=15) +
+  theme(axis.text.x=element_text(angle=45, vjust=1, hjust=1)) +
+  geom_vline(xintercept=0.2)+
+  scale_colour_manual(values=get_cat_palette(4)) +
+  xlab('Median intra-protein PSM\n Euclidean distance') +
+  ylab('Density')
+
+print(p)
+
+all_psm_distances %>% group_by(rep, binned_median_distance) %>% tally() %>% pivot_wider(names_from=rep, values_from=n)
+all_psm_distances %>% group_by(rep, median_distance<0.2) %>% tally() %>% pivot_wider(names_from=rep, values_from=n)
+```
+
+
+```{r}
+
+psm_res_filt <- psm_res_imputed %>% names() %>% lapply(function(x){
+  psm_to_retain <- psm_distances[[x]] %>% filter(median_distance<0.2) %>% pull(PSM1)
+  removed_outliers <- psm_res_imputed[[x]][psm_to_retain, ]  
+  camprotR:::message_parse(fData(removed_outliers), 'Master.Protein.Accessions', 'Removed PSM outliers')
+  return(removed_outliers)
+})
+
+names(psm_res_filt) <- names(psm_res_imputed)
+
+```
+
+Alternative filtering by hard thresholds, sn and delta score and removing One-hit wonders to compare outlier-based approach and hard threshold filtering
+
+```{r}
+# 
+psm_res_filt_hard <- psm_res %>% lapply(function(x){
+  x <- x %>% update_average_sn() %>%
+    filter_TMT_PSMs(inter_thresh=50, sn_thresh=10)
+  one_hit_wonders <- names(table(fData(x)$Master.Protein.Accessions)[table(fData(x)$Master.Protein.Accessions)==1])
+  x <- x[!fData(x)$Master.Protein.Accessions %in% one_hit_wonders,]
+  camprotR:::message_parse(fData(x), 'Master.Protein.Accessions', 'Filtering out "one hit wonders"')
+  
+  x <- x[fData(x)$Delta.Score>=0.05,]
+  camprotR:::message_parse(fData(x), 'Master.Protein.Accessions', 'Filtering out Delta score < 0.05')
+  x
+})
+
+```
+
+Compare PSM features in the filtered datasets
+```{r, fig.height=10, fig.width=5}
+filtering_datasets <- list('No filtering'=psm_res, 'Hard filtering'=psm_res_filt_hard, 'Outlier filtering'=psm_res_filt)
+
+filtering_datasets %>% names() %>% lapply(function(dataset){
+  print(dataset)
+  filtering_datasets[[dataset]] %>%
+    names() %>%
+    lapply(function(x){
+      print(x)
+      print(dim(filtering_datasets[[dataset]][[x]]))
+    rowSums(exprs(filtering_datasets[[dataset]][[x]]), na.rm=TRUE) %>%
+        data.frame() %>%
+        setNames('mean_SN') %>%
+        mutate(experiment=x, dataset=dataset)
+  }) %>% bind_rows()
+})  %>% bind_rows() %>%
+  mutate(dataset=factor(dataset, levels=names(filtering_datasets))) %>%
+  ggplot(aes(log2(mean_SN), colour=dataset)) +
+  geom_line(stat='density') +
+  theme_camprot() +
+  xlim(0, 15) +
+  geom_vline(xintercept=log2(10), linetype=2) +
+  facet_wrap(~experiment, ncol=1) +
+  xlab('Average reporter S/N') +
+  ylab('Density')
+
+filtering_datasets %>% names() %>% lapply(function(dataset){
+  filtering_datasets[[dataset]] %>%
+    names() %>%
+    lapply(function(x){
+      print(dim(filtering_datasets[[dataset]][[x]]))
+      fData(filtering_datasets[[dataset]][[x]])[,'Isolation.Interference.in.Percent',drop=FALSE] %>%
+        mutate(experiment=x, dataset=dataset)
+  }) %>% bind_rows()
+})  %>% bind_rows() %>%
+  mutate(dataset=factor(dataset, levels=names(filtering_datasets))) %>%
+  ggplot(aes(Isolation.Interference.in.Percent, colour=dataset)) +
+  geom_line(stat='density') +
+  theme_camprot() +
+  geom_vline(xintercept=50, linetype=2) +
+  facet_wrap(~experiment, ncol=1) +
+  xlab('Interference') +
+  ylab('Density')
+
+
+
+```
+
+```{r, fig.height=8, fig.width=8}
+
+sample='Rep1'
+dataset <- 'Outlier filtering'
+
+p <- names(psm_res) %>% lapply(function(sample){
+  annotated_psms <- psm_res[[sample]]
+  names(filtering_datasets) %>% lapply(function(dataset){
+    if(dataset=='No filtering'){
+      return(NULL)
+    }
+    flt_obj <- filtering_datasets[[dataset]]
+    
+    fData(annotated_psms)$filtered <- !rownames(annotated_psms) %in% rownames(flt_obj[[sample]])
+
+    mean_sn <- annotated_psms %>%
+      exprs() %>%
+      rowSums(na.rm=TRUE)
+    
+    fData(annotated_psms) %>%
+      data.frame() %>%
+      mutate(mean_SN=mean_sn) %>% 
+      mutate(sample=sample, dataset=dataset)
+
+  }) %>% bind_rows()
+}) %>% bind_rows() %>%
+  ggplot(aes(log2(mean_SN), colour=dataset)) +
+  geom_density() +
+  theme_camprot(base_size=15) +
+  facet_grid(filtered~sample) +
+  scale_colour_manual(values=get_cat_palette(2))
+
+print(p)
+print(p + aes(Isolation.Interference.in.Percent))
+print(p + aes(Delta.Score))
+```
+
+
+
+
+Summarise to protein-level abundance using simple sum of PSM intensities. 
+```{r}
+protein_res <- psm_res_filt %>% lapply(function(x){
+  psm_res_filt_log <- x %>%
+    log(base=2)
+  
+  psm_res_filt_no_na <- psm_res_filt_log %>%
+    center_normalise_to_ref(medians=get_medians(psm_res_filt_log)) %>%
+    filterNA(pNA=0)
+  
+  exprs(psm_res_filt_no_na) <- 2^exprs(psm_res_filt_no_na)
+  print(dim(psm_res_filt_no_na))
+  
+  retain_proteins <- psm_res_filt_no_na %>% fData() %>%
+    group_by(Master.Protein.Accessions) %>%
+    tally() %>%
+    filter(n>=2) %>%
+    pull(Master.Protein.Accessions)
+
+  psm_res_filt_no_na_min_2_psm <- psm_res_filt_no_na[
+    fData(psm_res_filt_no_na)$Master.Protein.Accessions %in% retain_proteins]
+
+  print(dim(psm_res_filt_no_na_min_2_psm))
+
+  group_protein <- fData(psm_res_filt_no_na_min_2_psm)$Master.Protein.Accessions
+  
+  psm_res_filt_no_na_min_2_psm %>%
+    MSnbase::combineFeatures(group=group_protein, method='sum')
+})
+```
+
+```{r}
+protein_res %>% lapply(dim)
+```
+
+Add markers. Here, we use the same markers as Aikaterini Geladaki et al (2019) - https://www.nature.com/articles/s41467-018-08191-w
+```{r}
+markers_df <- read.delim("../../../shared_files/markers_9B_hyperLOPIT_vs_DC.csv", sep=",", header=FALSE, stringsAsFactors=FALSE)[,1:2]
+markers_df$V2 <- recode(markers_df$V2,
+                        #"NUCLEUS-CHROMATIN"="NUCLEUS",
+                        "RIBOSOME 40S"="RIBOSOME",
+                        "RIBOSOME 60S"="RIBOSOME")
+
+markers_proteins <- markers_df$V2
+names(markers_proteins) <- markers_df$V1
+
+protein_res <- protein_res %>% lapply(function(x) addMarkers(x, markers_proteins))
+```
+
+Plot tag intensities at PSM and protein level
+```{r}
+source('../../../R/tag_intensity_density.R')
+
+psm_res_filt %>% names() %>% lapply(function(x){
+  
+  p <- psm_res_filt[[x]] %>% log(base=2) %>% plot_quant() + ggtitle(x)
+  print(p)
+  
+
+  p <- protein_res[[x]] %>% log(base=2) %>% plot_quant() + ggtitle(x)
+  print(p)
+  
+  if(x != 'Total'){
+    p <- psm_res_filt[[x]] %>% log(base=2) %>% plot_quant_density_tg()  +
+      xlab("Protein intensity") + ggtitle(x)
+    print(p)
+    
+    
+    p <- protein_res[[x]] %>% log(base=2) %>% plot_quant_density_tg()  + 
+      xlab("Protein intensity") + ggtitle(x)
+    print(p)
+  }
+  
+  return(NULL)
+})
+
+
+```
+Make combined datasets for replicates of Ctrl and Tg
+
+When combining features across the replicates, it makes sense to first normalise the abundances within each experiment. Otherwise, a protein quantified with more PSMs in one replicate will appear to be more abundant in this replicate.
+```{r}
+# We will need to update most feature names (using MSnbase::updateFvarLabels).
+# However, for some feature, we don't want to update. For example, we only want a 
+# single 'Sequence' column. This function reverts the feature name update for
+# the desired columns
+revert_update <- function(colnames,
+                          suffix,
+                          remove_prefixes){
+  remove_match = paste0(remove_prefixes, suffix)
+  matches <- which(colnames %in% remove_match)
+  removed_colnames <- gsub(suffix, '', colnames)
+  colnames[matches] <- removed_colnames[matches]
+  colnames
+}
+
+# To combine the 3 replicates, we need to update feature and sample names,
+# and then use MSnbase:combine twice.
+combine_three_reps <- function(obj,
+                               condition_grep,
+                               remove_prefixes=c('Master.Protein.Accessions','markers')){
+  
+  reps <- obj %>% names() %>% lapply(function(x){
+    
+    updated <- obj[[x]][,grepl(condition_grep, pData(obj[[x]])$condition)] %>%
+      updateFvarLabels(label=x) %>%
+      updateSampleNames(label=x)
+
+    fvarLabels(updated) <- revert_update(fvarLabels(updated),
+                                         remove_prefixes,
+                                         suffix=sprintf('.%s', x))
+    
+    updated
+  })
+  
+  all_reps <- MSnbase::combine(
+    normalise(reps[[1]], 'sum'),
+    MSnbase::combine(normalise(reps[[2]], 'sum'),
+                     normalise(reps[[3]], 'sum')))
+  
+  pData(all_reps)$replicate <- rep(1:3, each=8)  
+  all_reps
+}
+
+
+combined_ctrl <- combine_three_reps(protein_res[paste0('Rep', 1:3)], condition_grep='DMSO')
+combined_tg <- combine_three_reps(protein_res[paste0('Rep', 1:3)],condition_grep='Thapsigargin')
+
+```
+
+```{r}
+combined_protein_res <- c(combined_ctrl, combined_tg)
+names(combined_protein_res) <- c('DMSO', 'Thapsigargin')
+combined_protein_res %>% lapply(dim)
+```
+
+
+```{r}
+table(rowSums(is.na(exprs(combined_protein_res$DMSO))))
+table(rowSums(is.na(exprs(combined_protein_res$Thapsigargin))))
+```
+
+Save the results for downstream notebooks
+```{r}
+saveRDS(protein_res, '../../out/protein_res.rds')
+saveRDS(combined_protein_res, '../../out/combined_protein_res.rds')
+saveRDS(psm_res_filt, '../../out/psm_res_filt.rds')
+saveRDS(psm_distances, '../../out/psm_distances.rds')
+```
+

@@ -1,0 +1,115 @@
+---
+title: "SIRV spike ins"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we consider the proportion of reads aligned/pseudoaligned to the SIRVs.
+  We then use this to estimate the amount of non-rRNA RNA in each fraction
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontfamily: mathpazo
+fontsize: 11pt
+---
+Here we plot the estimates for the proportion of spike in RNAs based on the fraction of reads aligned to the SIRV genome
+```{r}
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(camprotR)
+
+```
+*Note: The input files are not part of the repo since they are too large. This notebook cannot be run from the files in the repo alone. *
+```{r}
+basedir <- "~/hpc_lorna_tg/projects/slorna/quant"
+
+infiles <- Sys.glob(file.path(basedir, "star.dir/*.star_cleaned.bam.tally.tsv"))
+```
+
+Read in the alignment-based read counts
+```{r}
+rows <- NULL
+for (infile in infiles){
+  sample_name <- gsub(".star_cleaned.bam.tally.tsv", "", basename(infile))
+  counts <- read.delim(infile)
+  counts$sample <- sample_name
+  rows[[sample_name]] <- counts
+}
+
+
+
+```
+
+
+```{r}
+counts_all <- data.frame(do.call("rbind", rows))
+counts_all$sample <- as.character(counts_all$sample)
+counts_all$reads <- as.numeric(as.character(counts_all$reads))
+
+counts_all <- counts_all %>% spread(key=type, value=reads) %>% data.frame()
+counts_all$fraction_sirv <- counts_all$SIRV / (counts_all$SIRV + counts_all$Genome)
+
+counts_all <- counts_all %>% separate(sample, into=c("LoRNA", "replicate", "fraction_n"), remove=FALSE) %>%
+    mutate(fraction=
+           case_when(
+    fraction_n == '1' ~ "Total",
+    fraction_n == '2' ~ "100g",
+    fraction_n == '3' ~ "500g",
+    fraction_n == '4' ~ "2000g",
+    fraction_n == '5' ~ "5000g",
+    fraction_n == '6' ~ "SN",
+    fraction_n == '7' ~ "10000g",
+    fraction_n == '8' ~ "SN-2",
+    TRUE ~ fraction_n
+  )) %>%
+  mutate(fraction=factor(fraction, levels=unique(fraction)))
+
+p <- counts_all %>%
+  ggplot(aes(factor(fraction), fraction_sirv*100, colour=replicate)) + geom_point() +
+  scale_y_continuous(limits=c(0, NA), name="SIRV spike in (%)") +
+  xlab("Fraction") +
+  scale_colour_manual(values=get_cat_palette(5), name='Replicate') +
+  theme_camprot(base_size=15)
+  
+print(p)
+
+ggsave("./results/plots/SIRV_proportion_alignment_pre_dedup.png")
+```
+
+```{r}
+sirv_correction <- readxl::read_excel('../../../../experimental_design/sLoRNA_RNA_details.xlsx') %>%
+  separate(`Sample name`, into=c('replicate', 'fraction_n')) %>%
+  #filter(!is.na(fraction_n)) %>%
+  mutate(replicate=gsub('R|T', '', replicate)) %>%
+  mutate(fraction=
+           case_when(
+    is.na(fraction_n) ~ "Total",
+    fraction_n == 'S1' ~ "100g",
+    fraction_n == 'S2' ~ "500g",
+    fraction_n == 'S3' ~ "2000g",
+    fraction_n == 'S4' ~ "5000g",
+    fraction_n == 'S5' ~ "SN",
+    fraction_n == 'S6' ~ "10000g",
+    fraction_n == 'S7' ~ "SN-2",
+    TRUE ~ fraction_n
+  )) %>%
+  mutate(fraction=factor(fraction, levels=unique(fraction))) %>%
+  select(rna_ug=`Amount (ug)`, replicate, fraction) %>%
+  mutate(proportion_intial_fraction=0.4/rna_ug) %>%
+  merge(counts_all, by=c('fraction', 'replicate')) %>%
+  mutate(sirv_correction=rna_ug/fraction_sirv)
+```
+
+```{r}
+print(sirv_correction)
+```
+
+```{r}
+sirv_correction %>% saveRDS('./results/sirv_correction.rds')
+```
+
+
+

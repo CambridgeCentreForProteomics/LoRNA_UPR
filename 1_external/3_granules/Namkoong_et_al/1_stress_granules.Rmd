@@ -1,0 +1,62 @@
+---
+title: "Parse stress granule data"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we parse external data regarding stress granules
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+```{r}
+library(tidyverse)
+library(biomaRt)
+library(camprotR)
+```
+
+Namkoong et al (2018) was performed with mouse. We need to map on 1:1 mouse:human orthologs to integrate these results with LoRNA.
+
+https://pubmed.ncbi.nlm.nih.gov/29576526/
+```{r}
+
+
+ensembl <- useEnsembl(biomart="ensembl", version=102, dataset="mmusculus_gene_ensembl")
+
+gene_ids <- getBM(attributes=c('ensembl_gene_id', 'external_gene_name', 'entrezgene_accession'),
+                  mart = ensembl)
+
+orthologs <- getBM(attributes=c('hsapiens_homolog_ensembl_gene', 'ensembl_gene_id'), mart=ensembl)
+
+multiple_mm_ids <- names(table(orthologs$ensembl_gene_id)[
+  table(orthologs$ensembl_gene_id)>1])
+
+multiple_hs_ids <- names(table(orthologs$hsapiens_homolog_ensembl_gene)[
+  table(orthologs$hsapiens_homolog_ensembl_gene)>1])
+
+orthologs <- orthologs %>%
+  filter(!ensembl_gene_id %in% multiple_mm_ids,
+         !hsapiens_homolog_ensembl_gene %in% multiple_hs_ids)
+```
+
+```{r}
+Namkoong_et_al_S1 <- read.delim('./Namkoong_et_al_S1.csv') %>%
+  merge(gene_ids, by.x='id', by.y='external_gene_name') %>%
+  merge(orthologs, by='ensembl_gene_id')
+
+Namkoong_et_al_S2 <- readxl::read_excel('./Namkoong_et_al_S2.xlsx') %>%
+  merge(gene_ids, by.x='...1', by.y='external_gene_name') %>%
+  merge(orthologs, by='ensembl_gene_id')
+
+```
+
+
+```{r}
+Namkoong_et_al_S1 %>% saveRDS('./out/Namkoong_et_al_S1.rds')
+Namkoong_et_al_S2 %>% saveRDS('./out/Namkoong_et_al_S2.rds')
+```
+

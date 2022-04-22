@@ -1,0 +1,165 @@
+---
+title: "Modelling features driving relocalisation to granules"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we model the features contributing to relocalisation to granules using
+  a penalised regression model (elastic net)
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+```{r}
+library(camprotR)
+library(tidyverse)
+library(MSnbase)
+library(biomaRt)
+library(glmnet)
+
+```
+
+```{r}
+transcript_features <- readRDS('./out/transcript_features.rds')
+```
+Split into train/test (80:20)
+```{r}
+set.seed(0)
+
+train <- sample(1:nrow(transcript_features), size=nrow(transcript_features)*0.8)
+test <- setdiff(1:nrow(transcript_features), train)
+print(dim(transcript_features))
+```
+```{r}
+features <- transcript_features[train,] %>% dplyr::select(-diff)
+
+diff <- transcript_features[train, 'diff']
+
+dim(features)
+length(diff)
+
+set.seed(0)
+nfolds <- 10
+foldid <- sample(rep(seq_len(nfolds), length=nrow(features)))
+alphas <- seq(0, 1, len=11)
+```
+Use glmnet for elastic net Gaussian regression
+```{r, eval=FALSE}
+
+ 
+cv.elasticnet <- alphas %>% lapply(function(alpha){
+  cv.glmnet(data.matrix(features),
+            diff,
+            alpha = alpha,
+            family = "gaussian",
+            foldid=foldid,
+            trace.it=TRUE)
+})
+
+saveRDS(cv.elasticnet, './out/cv.elasticnet_tx_features.rds')
+```
+
+Compare values for alpha (how close to LASSO/Ridge)
+```{r, fig.height=10, fig.width=10}
+cv.elasticnet <- readRDS('./out/cv.elasticnet_tx_features.rds')
+
+par(mfrow = c(4, 3), mar=c(4,4,5.5,1))
+cv.elasticnet %>% lapply(plot)
+
+
+```
+Define the optimal alpha value
+```{r}
+min_cvms <- unlist(lapply(cv.elasticnet, function(x) min(x$cvm))) 
+print(min_cvms)
+plot(min_cvms)
+best <- which.min(min_cvms)
+optimal_alpha <- alphas[best]
+```
+Plot L1 norm vs coefficient
+```{r}
+optimal_glmnet_fit <- cv.elasticnet[[best]]
+plot(optimal_glmnet_fit)
+plot(optimal_glmnet_fit$glmnet.fit)
+```
+
+
+
+
+
+Compare predicted relocation and observed. 
+```{r}
+proportions <- readRDS('../6_relocalisation/out/proportions_annot.rds')
+
+major_loc_dmso <- proportions %>% lapply(function(x){
+  x %>%
+    filter(condition=='DMSO') %>%
+    #tibble::column_to_rownames('id') %>%
+    mutate(Nucleus=Nucleus+Nucleolus) %>%
+    dplyr::select(id, Cytosol, Granule, Nucleus, Membrane) %>%
+    pivot_longer(-id) %>%
+    #filter(value>0.5) %>%
+    group_by(id) %>%
+    slice_max(order_by=value, n=1, with_ties=FALSE) %>%
+    tibble::column_to_rownames('id') %>%
+    setNames(c('major_localisation', 'proportion'))
+  })
+
+```
+
+
+
+
+
+
+
+
+
+```{r}
+pred <- predict(optimal_glmnet_fit,
+                newx=(data.matrix(dplyr::select(transcript_features[test,], -diff))), s='lambda.1se')
+obs <- transcript_features[test,'diff']
+max_pred_obs <- max(c(pred, obs))
+min_pred_obs <- min(c(pred, obs))
+
+data.frame(pred[,1], obs)
+
+p <- data.frame(pred=pred[,1], obs, row.names=rownames(transcript_features)[test]) %>%
+  merge(major_loc_dmso$transcript, by='row.names') %>%
+  ggplot(aes(pred, obs)) +
+  geom_point(alpha=0.2, size=0.2) +
+  theme_camprot() +
+  xlim(min_pred_obs, max_pred_obs) +  
+  xlim(min_pred_obs, max_pred_obs) +
+  geom_abline(slope=1, linetype=2) +
+  xlab('Predicted') +
+  ylab('Observed')
+
+print(p)
+
+coefficients <- coef(optimal_glmnet_fit$glmnet.fit,
+                     s=optimal_glmnet_fit$lambda.1se) %>%
+  as.data.frame.matrix() %>%
+  setNames('coef')
+
+non_zero <- coefficients %>% filter(coef>0)
+n_non_zero <- nrow(non_zero)
+n_transcripts <- length(test)
+
+agreement <- caret::postResample(pred, obs)
+adj_r_squared <- 1-(((1-agreement['Rsquared'])*(n_transcripts-1))/(n_transcripts-n_non_zero-1))
+print(agreement)
+print(adj_r_squared)
+```
+
+OK, so it's correlated, as we would hope, but clearly only capturing a minor portion of the variance.
+
+
+```{r}
+saveRDS(coefficients, './out/lasso_coefficients.rds')
+```
+

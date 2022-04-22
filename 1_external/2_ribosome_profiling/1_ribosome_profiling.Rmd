@@ -1,0 +1,134 @@
+---
+title: "Parse ribosome profiling data"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we parse external ribosome profiling data
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+```{r}
+library(MSnbase)
+library(camprotR)
+library(biomaRt)
+library(tidyverse)
+```
+
+```{r}
+ensembl <- useEnsembl(biomart="ensembl", version=102, dataset="hsapiens_gene_ensembl")
+```
+  
+First, the translation of lincRNAs
+
+'Identification and analysis of ribosome-associated lncRNAs using ribosome profiling data'
+Chao Zeng,Tsukasa Fukunaga and Michiaki Hamada
+https://www.ncbi.nlm.nih.gov/pmc/articles/PMC5975437/#CR42
+
+```{r}
+lincRNA_ribosome_profiling <- read.delim("./Zeng_et_al_2018_lincRNA_ribosome_profiling.csv")
+
+lincRNA_ribosome_profiling <- lincRNA_ribosome_profiling %>%
+  separate(lncRNA_ID, into=c("ensembl_transcript_id", "_", "transcript_nm"),
+    sep="_", remove=FALSE) %>%
+    separate(ensembl_transcript_id, into=c("ensembl_transcript_id", "id_suffix"),
+             sep="\\.", remove=FALSE)
+
+transcript2gene <- getBM(attributes=c(
+  'ensembl_transcript_id', 'ensembl_gene_id'),
+  mart = ensembl,
+  filters="ensembl_transcript_id",
+  values=unique(lincRNA_ribosome_profiling$ensembl_transcript_id))
+
+lincRNA_ribosome_profiling <- lincRNA_ribosome_profiling %>%
+  merge(transcript2gene, by='ensembl_transcript_id')
+
+multiple_transcripts <- lincRNA_ribosome_profiling %>%
+  group_by(ensembl_gene_id) %>%
+  tally() %>%
+  filter(n>1)
+
+lincRNA_ribosome_profiling_single_transcript <- lincRNA_ribosome_profiling %>%
+  filter(!ensembl_gene_id %in% multiple_transcripts$ensembl_gene_id)
+
+saveRDS(lincRNA_ribosome_profiling_single_transcript,
+        './out/zeng_2018_lincRNA_ribosome_profiling.rds')
+```
+
+
+
+Next, U-2 OS ribosome profiling.
+
+Teemu P. Miettinen and Mikael Björklund
+
+Modified ribosome profiling reveals high abundance of ribosome protected mRNA fragments derived from 3′ untranslated regions
+
+```{r}
+ribosome_profiling <- read.csv("./nar-03125-v-2014-File010.csv", skip=4)
+ribosome_profiling <- ribosome_profiling %>% filter(Gene!="") %>%
+  separate(Gene, into=c("ensembl_gene_id", "ensembl_transcript_id", "gene_name"), remove=FALSE, sep="\\|")
+
+transcript2length <- getBM(attributes=c(
+  'ensembl_transcript_id', 'cds_length'), mart = ensembl,
+  filters="ensembl_transcript_id", values=unique(ribosome_profiling$ensembl_transcript_id))
+
+head(transcript2length)
+
+ribosome_profiling$ensembl_gene_id %>% length()
+ribosome_profiling$ensembl_gene_id %>% unique() %>% length()
+
+# single transcript model selected for each gene so no need to summarise across genes
+ribosome_density <- ribosome_profiling %>%
+  merge(transcript2length, by="ensembl_transcript_id") %>%
+  mutate(ribo_density=RNaseI_CDS/cds_length) %>%
+  tibble::column_to_rownames("ensembl_gene_id")
+
+ribosome_density %>% ggplot(aes(log2(ribo_density))) + geom_density() +
+  theme_camprot()
+
+
+saveRDS(ribosome_density, "./out/Teemu_et_al_2015_ribosome_profiling.rds")
+```
+
+ER-ribosome profiling
+
+Calvin H Jan, Christopher C Williams, Jonathan S Weissman
+
+Principles of ER cotranslational translocation revealed by proximity-specific ribosome profiling
+
+https://pubmed.ncbi.nlm.nih.gov/25378630
+```{r}
+infile <- "./Revision1_ms1257521tableS6.txt"
+er_ribo_raw_columns <- readLines(infile)[24]
+er_ribo_raw_columns <- strsplit(gsub("#", "", er_ribo_raw_columns), "\t")[[1]]
+
+er_ribo_raw <- read.table(infile, comment.char="#", quote="", sep="\t")
+colnames(er_ribo_raw) <- er_ribo_raw_columns
+
+ensembl <- useEnsembl(biomart="ensembl", version=102, dataset="hsapiens_gene_ensembl")
+
+
+ucsc2ensembl %>% filter(ucsc!='')
+
+x <- listAttributes(ensembl)
+x %>% filter(grepl('uniprot', description, ignore.case=TRUE))
+print(head(x))
+
+uniprot2ensembl <- getBM(attributes=c(
+  'ensembl_gene_id', 'uniprotswissprot'),
+  mart = ensembl)
+
+er_ribo_raw <- er_ribo_raw %>% filter(uniprot.protein.id!='') %>%
+  merge(uniprot2ensembl, by.x="uniprot.protein.id", by.y="uniprotswissprot", all.x=TRUE)
+
+print(head(er_ribo_raw))
+
+saveRDS(er_ribo_raw, "./out/jan_et_al_2014_ER_ribosome_profiling.rds")
+
+```
+

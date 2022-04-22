@@ -1,0 +1,163 @@
+---
+title: "Make MSnSets"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we read in the quantification data and store in MSnSet, including the dLoRNA markers
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+In this notebook, we read in the salmon quant files and make MsnSets to store the data
+```{r}
+
+library(tidyverse)
+library(tximport)
+library(biomaRt)
+library(camprotR)
+library(MSnbase)
+library(pRoloc)
+```
+
+Set the working directories for the dedup pipeline
+
+*Note: The input files are not part of the repo since they are too large. This notebook cannot be run from the files in the repo alone. Unless absolutely neccessary, use the .rds objects in the results directory as input for all notebooks downstream of this one*
+
+```{r}
+
+basedir <- "~/hpc_lorna_tg/projects/slorna/quant"
+
+quant_infiles <- Sys.glob(file.path(basedir, "salmon.dir/*/quant.sf"))
+print(length(quant_infiles))
+```
+
+We need the map from transcript to gene when reading in the data
+```{r}
+transcript_to_gene <- read.delim(file.path(
+  basedir,"geneset.dir/transcript2geneMap.tsv"))
+```
+
+
+Import the salmon quantification
+```{r}
+quant <- tximport(quant_infiles,
+                  type="salmon",
+                  tx2gene=transcript_to_gene,
+                  varReduce=FALSE, txOut=FALSE)
+
+sample_ids <- lapply(quant_infiles, FUN=function(x) basename(dirname(x))) %>% unlist()
+
+#sample_ids <- lapply(salmon_quant_infiles, FUN=function(x) gsub(suffix, '', basename(dirname(x))))
+
+colnames(quant$abundance) <- sample_ids
+colnames(quant$counts) <- sample_ids
+
+
+```
+
+Get the required annotations from ensembl
+```{r}
+ensembl <- useEnsembl(biomart="ensembl", version=102, dataset="hsapiens_gene_ensembl")
+
+gene_biotypes <- getBM(attributes=c('ensembl_gene_id', 'gene_biotype', 'external_gene_name', 'chromosome_name'),
+                       mart = ensembl,
+                       filters='ensembl_gene_id', 
+                       values=rownames(quant$counts))
+print(dim(gene_biotypes))
+print(length(unique(gene_biotypes$ensembl_gene_id)))
+```
+
+Add markers from dLoRNA
+
+```{r}
+dLoRNA <- readRDS("../../1_dlorna/2_lorna/4_proportional_localisation/results/all_datasets_final.rds")$gene
+
+
+gene_markers_dmso <- getMarkers(dLoRNA$DMSO$corrected, verbose=FALSE)
+gene_markers_tg <- getMarkers(dLoRNA$Tg$corrected, verbose=FALSE)
+
+gene_markers <- c(gene_markers_dmso, gene_markers_tg[setdiff(names(gene_markers_tg), names(gene_markers_dmso))])
+
+print(length(gene_markers_dmso))
+print(length(gene_markers_tg))
+print(length(gene_markers))
+print(length(union(names(gene_markers_dmso), names(gene_markers_tg))))
+print(length(unique(names(gene_markers))))
+
+
+```
+
+```{r}
+gene_markers <- gene_markers[gene_markers!='unknown']
+table(gene_markers)
+
+```
+
+Functions to make Gene and Transcript-level MSnSets
+```{r}
+
+keep_biotypes <- c('protein_coding', 'lncRNA')
+
+counts <- quant$counts[rowSums(quant$counts, na.rm=TRUE)>0,] %>% data.frame()
+  
+sample_columns <- colnames(counts) 
+  
+counts <- counts %>%
+  tibble::rownames_to_column("ensembl_gene_id") %>%
+  merge(gene_biotypes, by="ensembl_gene_id", all.x=TRUE) %>%
+  filter(gene_biotype %in% keep_biotypes) %>%
+  filter(external_gene_name!='Y_RNA') # remove Y RNAs
+
+exprsCsv <- counts[,sample_columns]
+  
+pdataCsv <- data.frame("sample"=colnames(exprsCsv), row.names=colnames(exprsCsv)) %>%
+  separate(sample, into=c('LoRNA', 'replicate', 'fraction_n'), remove=FALSE) %>%
+  mutate(fraction=
+           case_when(
+    fraction_n == '1' ~ "Total",
+    fraction_n == '2' ~ "100g",
+    fraction_n == '3' ~ "500g",
+    fraction_n == '4' ~ "2000g",
+    fraction_n == '5' ~ "5000g",
+    fraction_n == '6' ~ "SN",
+    fraction_n == '7' ~ "10000g",
+    fraction_n == '8' ~ "SN-2",
+    TRUE ~ fraction_n
+  ))
+  
+  
+fdataCsv <- counts[!colnames(counts) %in% colnames(exprsCsv)] %>%
+  tibble::column_to_rownames("ensembl_gene_id")
+fcols <- colnames(fdataCsv)
+
+fdataCsv$gene_biotype[grepl("SIRV", rownames(fdataCsv))] <- "SIRV"
+fdataCsv$chromosome_name[grepl("SIRV", rownames(fdataCsv))] <- "SIRV"
+
+count_res <- MSnSet(as.matrix(exprsCsv), fdataCsv, pdataCsv)
+
+count_res  <- addMarkers(count_res, gene_markers)
+```
+```{r}
+pData(count_res)
+```
+
+```{r}
+
+# CPM normalisation
+exprs(count_res) <- t(t(exprs(count_res))/colSums(exprs((count_res))))*1E6
+```
+
+
+
+
+
+Save out objects for other notebooks
+```{r}
+saveRDS(count_res, "./out/gene_quant_lorna_res.rds")
+
+```
+

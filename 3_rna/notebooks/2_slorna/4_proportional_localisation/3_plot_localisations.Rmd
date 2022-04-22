@@ -1,0 +1,109 @@
+---
+title: "Plot localisations"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we plot the localisation proportion estimates
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+```{r}
+library(camprotR)
+library(tidyverse)
+library(MSnbase)
+library(pRoloc)
+library(pRolocExt)
+
+select <- dplyr::select
+```
+
+```{r}
+colours <- readRDS('../../../../6_shiny_app/out/shiny_colours.rds')$RNA[1:6]
+```
+
+
+Read in sLoRNA proportions
+```{r}
+proportions_per_rep <- readRDS(
+  './results/proportions_per_rep.rds') %>%
+      select(markers, id, replicate, mean_var_explained,
+             Membrane, Cytosol, Nucleus, Mitochondrion)
+
+
+```
+
+Plot proportions per replicate for markers
+```{r, fig.height=8, fig.width=6}
+p1 <- proportions_per_rep %>%
+  #mutate(Mem=Membrane+Mitochondrion) %>%
+  filter(markers!='unknown') %>%
+  select(-c(mean_var_explained)) %>%
+  pivot_longer(names_to='localisation', values_to='lm_coef', cols=-c(markers, id, replicate)) %>%
+  ggplot(aes(lm_coef, fill=localisation)) +
+  geom_histogram(binwidth=0.05, position='stack') +
+  #geom_density() +
+  facet_grid(markers~replicate, scales='free') +
+  theme_camprot(base_size=10) + xlim(0,1) +
+  scale_fill_manual(values=colours[c(1:3,5:6)], name='Localisation') +
+  scale_x_continuous(breaks=seq(0,1,.2), name='NNLS coefficient') +
+  ylab('Count')
+
+print(p1)
+
+
+```
+Convert to wide format for downstream chunks
+```{r, fig.height=6, fig.width=6}
+proportions_per_rep_wide <- proportions_per_rep %>%
+    pivot_longer(cols=-c(markers, id, replicate)) %>%
+    pivot_wider(names_from=replicate, values_from=value)
+
+```
+
+Correlate between replicates
+```{r}
+get_cor_long <- function(x){
+  x <- cor(x, use='complete.obs', method='pearson') %>%
+    as.data.frame.matrix() %>% 
+    tibble::rownames_to_column('rep2') %>%
+    pivot_longer(cols=-rep2, names_to='rep1', values_to='pearson_cor')
+}
+
+to_plot <- proportions_per_rep %>%
+  mutate(Mem=Membrane+Mitochondrion) %>%
+    pivot_longer(cols=-c(markers, id, replicate)) %>%
+    pivot_wider(names_from=replicate, values_from=value) %>% 
+    filter(name != 'mean_var_explained') %>%
+    select(-c(markers, id)) %>%
+    group_by(name) %>%
+    group_modify(~get_cor_long(.)) %>%
+    filter(rep1!=rep2)
+```
+
+```{r}
+library(ggbeeswarm)
+```
+
+Plot correlations between replicates
+```{r}
+to_plot %>%
+  filter(rep2>rep1) %>% #, rep1!=1) %>%
+  filter(name!='Mem') %>%
+  ggplot(aes(name, pearson_cor)) +
+  geom_violin() +
+  geom_quasirandom() +
+  stat_summary(fun=mean, fun.max=mean, fun.min=mean,
+               colour=get_cat_palette(1), geom='errorbar', width=0.5) +
+  theme_camprot(border=FALSE) +
+  ylim(0, 1) +
+  xlab('Localisation') +
+  ylab('Pearson correlation') +
+  theme(axis.text.x=element_text(angle=45, vjust=1, hjust=1))
+```
+

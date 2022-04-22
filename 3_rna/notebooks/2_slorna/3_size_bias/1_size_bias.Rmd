@@ -1,0 +1,154 @@
+---
+title: "Size bias"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we consider the potential size bias with the high g force spin (10,000g)
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+```{r}
+library(tidyverse)
+library(camprotR)
+library(pRoloc)
+library(pRolocExt)
+library(biomaRt)
+library(biobroom)
+```
+
+Read in gene-level data
+
+```{r}
+gene_quant <- readRDS('../2_data_processing//out/gene_quant_lorna_res.rds')
+
+all_datasets <- readRDS('../2_data_processing//out/all_datasets.rds')
+```
+
+```{r}
+all_quant <- readRDS('../2_data_processing/out/gene_quant_lorna_res.rds')
+total <- all_quant[,pData(all_quant)$fraction=='Total']
+
+sum_total_counts <- total %>% exprs() %>%
+  rowSums(na.rm=TRUE)
+
+
+# Retain genes with counts > 2^5
+plot(density(log2(sum_total_counts)))
+keep_genes <- sum_total_counts[sum_total_counts>2^5] %>% names()
+
+
+```
+Identify cytosolic RNAs using density LoRNA proportions
+```{r}
+dlorna_cytosol_proportions_dmso <-readRDS('../../1_dlorna/2_lorna/3_proportional_localisation/results/proportions.rds')$gene %>%
+  filter(condition=='DMSO') %>%
+  dplyr::select(id, Cytosol, sd_Cytosol, Granule, sd_Granule)
+
+
+print(dim(dlorna_cytosol_proportions_dmso))
+
+```
+Estimate approximate RNA length per gene.
+```{r}
+ensembl <- useEnsembl(biomart="ensembl", version=102, dataset="hsapiens_gene_ensembl")
+
+listAttributes(ensembl)
+transcript_lengths <- getBM(attributes=c('ensembl_transcript_id',
+                                         'ensembl_gene_id',
+                                         'transcript_length',
+                                         'transcript_tsl',
+                                         'transcript_gencode_basic',
+                                         'transcript_appris'),
+                                         mart = ensembl,
+                     filters = 'ensembl_gene_id',
+                     values=rownames(all_datasets$gene$corrected))
+
+print(length(rownames(all_datasets$gene$corrected)))
+
+gene_length <- transcript_lengths %>% filter(grepl('tsl1', transcript_tsl), transcript_gencode_basic=='GENCODE basic') %>%
+  group_by(ensembl_gene_id) %>%
+  summarise(max_transcript_length=max(transcript_length),
+            min_transcript_length=min(transcript_length),
+            mean_transcript_length=mean(transcript_length))
+
+
+```
+
+Extract Total vs SN ratio
+```{r}
+library(biobroom)
+total_vs_sn <- gene_quant[,pData(gene_quant)$fraction %in% c('Total', 'SN')]
+
+pData(total_vs_sn)$sample <- NULL
+
+total_vs_sn_ratio <- tidy(total_vs_sn, addPheno=TRUE) %>%
+  dplyr::select(ensembl_gene_id=protein, replicate, fraction, value) %>%
+  pivot_wider(values_from=value, names_from=fraction) %>%
+  mutate(ratio_to_total=SN/Total)
+
+total_vs_sn_dlorna_cyt <- total_vs_sn_ratio %>%
+  merge(dlorna_cytosol_proportions_dmso, by.x='ensembl_gene_id', by.y='id') %>%
+  merge(gene_length, by='ensembl_gene_id')
+```
+
+
+Correlate total and sedimentation LoRNA supernatant abundances.
+```{r}
+to_plot <- total_vs_sn_dlorna_cyt %>% filter(Total>1, Cytosol>0.8)
+
+p_cors <- to_plot %>%
+  filter(is.finite(log2(ratio_to_total))) %>%
+  summarise(p_cor=cor(log10(mean_transcript_length), log2(ratio_to_total),
+                      method='pearson', use='pairwise.complete.obs'))
+p <- to_plot %>%
+  ggplot(aes(log10(mean_transcript_length), log2(ratio_to_total))) +
+  geom_point(alpha=0.2, size=0.2) +
+  geom_smooth(method='lm', colour=get_cat_palette(2)[2]) +
+  theme_camprot(border=FALSE, base_size=15, base_family='sans') +
+  geom_text(data=p_cors, inherit.aes=FALSE,
+            x=Inf, y=Inf, vjust=1.5, hjust=1.2, size=6,
+            aes(label=sprintf("rho~`=`~ %.2f", p_cor)),
+            parse=TRUE,
+            colour=get_cat_palette(2)[2]) +
+  xlab('Gene length (bp; log10)') +
+  ylab('Supernatant / Total (log2)') +
+  theme(strip.background=element_blank())
+
+print(p)
+ggsave('../../../../5_manuscript_figures/Figure_2/size_bias/size_bias.png', width=3.5, height=3.5)
+ggsave('../../../../5_manuscript_figures/Figure_2/size_bias/size_bias.pdf', width=3.5, height=3.5)
+```
+As above, but per replicate. Note that with 1/5 replicates, the effect is in the opposite direction.
+```{r, fig.height=5, fig.width=8}
+
+
+any(!is.finite(log2(to_plot$ratio_to_total)))
+
+p_cors <- to_plot %>%
+  filter(is.finite(log2(ratio_to_total))) %>%
+  group_by(replicate) %>%
+  summarise(p_cor=cor(log10(mean_transcript_length), log2(ratio_to_total),
+                      method='pearson', use='pairwise.complete.obs'))
+
+
+to_plot %>%
+  ggplot(aes(log10(mean_transcript_length), log2(ratio_to_total))) +
+  geom_point(alpha=0.2, size=0.2) +
+  geom_smooth(method='lm') +
+  facet_wrap(~paste('Rep.', replicate)) +
+  theme_camprot(border=FALSE, base_size=10) +
+  geom_text(data=p_cors, inherit.aes=FALSE,
+            x=Inf, y=Inf, vjust=1.5, hjust=1.2, size=3,
+            aes(label=sprintf("r = %.3f", p_cor)),
+            colour=get_cat_palette(1)) +
+  xlab('Transcript length (bp; log10)') +
+  ylab('Supernatant / Total (log2)') +
+  theme(strip.background=element_blank())
+```
+
+

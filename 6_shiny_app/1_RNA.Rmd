@@ -1,0 +1,172 @@
+---
+title: "Make the RNA shiny app objects "
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we make the objects for the RNA shiny apps
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+```{r}
+library(MSnbase)
+library(tidyverse)
+
+```
+
+
+First, we read in the final MSnsets for the density-level RNA analysis
+```{r}
+dlorna <- readRDS('../3_rna/notebooks/1_dlorna/2_lorna/3_proportional_localisation/results/all_datasets_final.rds')
+dlorna$gene$DMSO$corrected
+dlorna %>% lapply(function(x) lapply(x, function(y) fvarLabels(y$corrected)))
+```
+Select the required columns
+```{r}
+keep_columns_gene <- c("gene_biotype", "external_gene_name", "chromosome_name", "markers" )
+keep_columns <- list('gene'=keep_columns_gene, 'transcript'=c('ensembl_gene_id', keep_columns_gene, 'transscript_biotype', 'transcript_length'))
+
+dlorna_selected <- dlorna %>%
+  names() %>%
+  lapply(function(level){
+    dlorna[[level]] %>% lapply(function(condition){
+      if(level=='gene'){
+        fData(condition$corrected) <- fData(condition$corrected) %>%
+          dplyr::select('gene_name'=external_gene_name,
+                        gene_biotype,
+                        markers)
+        
+        return(condition$corrected)
+        
+      } else{
+        fData(condition$corrected) <- fData(condition$corrected) %>%
+          dplyr::select(ensembl_gene_id,
+                        'gene_name'=external_gene_name,
+                        gene_biotype,
+                        transcript_biotype,
+                        transcript_length,
+                        markers)
+        
+        return(condition$corrected)
+        
+      }
+    })
+  })
+
+
+names(dlorna_selected) <- names(dlorna)
+
+
+dim(dlorna_selected$gene$DMSO)
+dim(dlorna$gene$DMSO$corrected)
+
+```
+
+
+Now we read in the proportions
+```{r}
+proportions <- readRDS('../3_rna/notebooks/1_dlorna/2_lorna/3_proportional_localisation/results/proportions.rds')
+```
+
+Convert proportions into tables per conditions
+```{r}
+conditions <- c('DMSO', 'Tg')
+
+proportions_per_condition <- proportions %>% lapply(function(x){
+  per_cond <- conditions %>%
+    lapply(function(cond){
+      x %>%
+        filter(condition==cond) %>%
+        dplyr::select(id, Nucleus, Nucleolus, Cytosol, Membrane, Granule,
+                      sd_Nucleus, sd_Nucleolus, sd_Cytosol, sd_Membrane, sd_Granule)
+    })
+  
+  names(per_cond) <- conditions
+  
+  return(per_cond)
+})
+
+
+```
+
+Finally, we merge the proportions onto the feature data in the MSnSets
+```{r}
+dlorna_for_shiny <- dlorna_selected %>%
+  
+  names() %>%
+  
+  lapply(function(level){
+    
+    obj_per_level <- dlorna_selected[[level]] %>%
+      
+      names() %>%
+      
+      lapply(function(condition){
+        
+        obj <- dlorna_selected[[level]][[condition]]
+        
+        new_fd <- fData(obj) %>%
+          merge(proportions_per_condition[[level]][[condition]], by.x='row.names', by.y='id', all.x=TRUE) %>%
+          tibble::column_to_rownames('Row.names')
+        
+        print(dim(fData(obj)))
+
+        fData(obj) <- new_fd
+        
+        print(dim(fData(obj)))
+        
+        return(obj)
+        
+      })
+    
+    names(obj_per_level) <- names(dlorna_selected[[level]])
+    
+    return(obj_per_level)
+    
+  })
+
+names(dlorna_for_shiny) <- names(dlorna_selected)
+```
+
+```{r}
+saveRDS(dlorna_for_shiny, './out/dlorna.rds')
+```
+
+Now, we read in the final MSnsets for the sedimentation-level RNA analysis
+
+```{r}
+slorna <- readRDS('../3_rna/notebooks/2_slorna/5_main_localisation//out/svm_res.rds')
+
+slorna_for_shiny <- slorna
+fData(slorna_for_shiny) <- cbind(fData(slorna_for_shiny)[,1:5], fData(slorna_for_shiny)[,6])
+
+fData(slorna_for_shiny) <- fData(slorna_for_shiny) %>%
+  dplyr::select('gene_name'=external_gene_name,
+                gene_biotype,
+                markers)
+
+head(fData(slorna_for_shiny))
+```
+And add the proportions
+```{r}
+slorna_prop <- readRDS('../3_rna/notebooks/2_slorna/4_proportional_localisation/results/proportions.rds') %>%
+  dplyr::select(id, Cytosol, sd_Cytosol, Membrane, sd_Membrane, Mitochondrion, sd_Mitochondrion)
+
+fData(slorna_for_shiny) <- fData(slorna_for_shiny) %>%
+  merge(slorna_prop, by.x='row.names', by.y='id', all.x=TRUE) %>%
+  tibble::column_to_rownames('Row.names')
+```
+
+
+```{r}
+saveRDS(slorna_for_shiny, './out/slorna.rds')
+```
+
+
+
+

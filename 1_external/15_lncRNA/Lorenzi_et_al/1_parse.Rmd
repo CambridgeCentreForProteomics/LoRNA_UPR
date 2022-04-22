@@ -1,0 +1,37 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+Lorenzi et al (https://www.nature.com/articles/s41587-021-00936-1#MOESM3) provide an extensive characterisation of lncRNAs
+
+```{r}
+library(tidyverse)
+library(camprotR)
+```
+First, let's start with their table where they helpfully annotate the lncRNAs as +/- polyA 
+```{r, eval=FALSE}
+# infile is not in repo as it's 93Mb!
+Lorenzi_S3 <- readxl::read_excel('41587_2021_936_MOESM3_ESM.xlsx', sheet=3)
+```
+
+Lorenzi includes gene names but not ensembl IDs, so we need to map these on. They used ensembl 86
+```{r}
+ensembl <- useEnsembl(biomart="ensembl", version=86, dataset="hsapiens_gene_ensembl")
+
+gene_biotype <- getBM(attributes=c('ensembl_gene_id', 'gene_biotype', 'external_gene_name'),
+                      mart = ensembl)
+```
+
+
+```{r}
+Lorenzi_S3_annot <- Lorenzi_S3 %>% merge(gene_biotype, by.x='gene_name', by.y='external_gene_name')
+
+```
+
+
+```{r}
+saveRDS(Lorenzi_S3_annot, './Lorenzi_S3_annot.rds')
+```
+
+

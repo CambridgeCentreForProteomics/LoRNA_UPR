@@ -1,0 +1,284 @@
+---
+title: "Plot localisations"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we plot the localisation proportion estimates using ternary plots
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+
+```{r}
+library(camprotR)
+library(tidyverse)
+library(compositions)
+
+library(ggtern)
+library(MSnbase)
+library(biomaRt)
+```
+
+`ggtern` messes up `ggplot`, removing axes labels etc. The code chunk below shows how to still plot with ggplot if desired. Alternatively, we can just keep ggtern to this notebook to avoid this issue.
+```{r, fig.height=1, fig.width=1}
+df <- data.frame(x=1:10, y=10:1)
+p <- ggplot(df, aes(x,y)) +
+  geom_point()
+
+print(p)
+ggplot2:::plot.ggplot(p)
+```
+
+```{r}
+mean_proportions <- readRDS(
+  './results/proportions.rds') %>%
+  lapply(function(x){
+    x %>% mutate(Nuc=Nucleus+Nucleolus,
+                 Cyt=Cytosol+Granule)
+  })
+
+mean_proportions %>% lapply(head)
+
+
+```
+Read in final quantification data
+```{r}
+all_datasets <- readRDS('./results/all_datasets_final.rds')
+
+```
+
+
+
+
+We'd like to add TM & signal information to the feature data
+```{r}
+
+ensembl <- useEnsembl(biomart="ensembl", version=102, dataset="hsapiens_gene_ensembl")
+
+transcript2info <- getBM(attributes=c('ensembl_transcript_id', 'transcript_gencode_basic',
+                                      'transcript_appris', 'transcript_tsl'), mart = ensembl)
+
+
+gene2transcript <- getBM(attributes=c('ensembl_transcript_id', 'ensembl_gene_id'), mart = ensembl)
+
+ensembl_tm_proteins <- getBM(attributes=c('ensembl_peptide_id', 'tmhmm', 'tmhmm_start', 'tmhmm_end'), mart = ensembl)
+ensembl_tm_proteins <- ensembl_tm_proteins %>% filter((tmhmm!=""|!is.na(tmhmm_start)|!is.na(tmhmm_end)))
+
+ensembl_signal_proteins <- getBM(attributes=c('ensembl_peptide_id', 'signalp', 'signalp_start', 'signalp_end'), mart = ensembl)
+ensembl_signal_position <- ensembl_signal_proteins %>% filter(signalp!="")
+
+gene2peptide <- getBM(attributes=c('ensembl_peptide_id',
+                                   'ensembl_transcript_id',
+                                   'ensembl_gene_id'), mart = ensembl)
+gene2peptide <- gene2peptide %>% filter(ensembl_peptide_id!="")
+
+peptide2protein <- getBM(attributes=c('ensembl_peptide_id', 'uniprotswissprot'), mart = ensembl)
+peptide2protein <- peptide2protein %>% filter(uniprotswissprot!="")
+
+
+gene_tm_signal_annotations <-  ensembl_tm_proteins %>% group_by(ensembl_peptide_id) %>%
+  summarise("TMs"=length(tmhmm)) %>%
+  merge(gene2peptide, by="ensembl_peptide_id", all.y=TRUE)
+
+gene_tm_signal_annotations$Signal <- gene_tm_signal_annotations$ensembl_peptide_id %in%
+  ensembl_signal_position$ensembl_peptide_id
+gene_tm_signal_annotations$TMs[is.na(gene_tm_signal_annotations$TMs)] <- 0
+
+gene_tm_signal_annotations <- gene_tm_signal_annotations %>%
+  mutate(TMs=TMs>0) %>%
+  group_by(ensembl_gene_id) %>%
+  summarise(Signal=max(Signal)==1,
+            TMs=max(TMs)==1)
+
+gene_tm_signal_annotations <- gene_tm_signal_annotations %>%
+  mutate(comb_Signal=ifelse(Signal, "Signal", "No Signal"),
+         comb_TM=ifelse(TMs, "TM", "No TM"))
+
+gene_tm_signal_annotations <- gene_tm_signal_annotations %>% mutate(Signal_TM=interaction(comb_Signal, comb_TM)) %>%
+  mutate(Signal_TM=recode(Signal_TM, 'No Signal.No TM'='No signal/TM', 'Signal.No TM'='Signal', 'No Signal.TM'='TM', 'Signal.TM'='Signal & TM')) 
+
+
+print(head(gene_tm_signal_annotations, 30))
+
+table(gene_tm_signal_annotations$Signal_TM)
+print(table(gene_tm_signal_annotations$TMs))
+print(table(gene_tm_signal_annotations$Signal))
+```
+
+Create objects for ternary plots
+```{r}
+
+tern_data <- mean_proportions %>%
+  names() %>%
+  lapply(function(level){
+    
+  feature_data <- fData(all_datasets[[level]]$DMSO$corrected) %>%
+    merge(gene_tm_signal_annotations, by.x='row.names',
+          by.y='ensembl_gene_id', all.x=TRUE)
+
+  mean_proportions[[level]] %>%
+    merge(feature_data, by.x='id', by.y='Row.names') %>%
+    mutate(gene_biotype=recode(gene_biotype,
+                               'Protein coding'='protein_coding'))
+  })
+
+names(tern_data) <- names(mean_proportions)
+```
+
+
+
+
+```{r}
+total_transcript_abundance <- readRDS('../1_data_processing/out/transcript_quant_total_res.rds')
+total_transcript_abundance <- rowMeans(exprs(total_transcript_abundance)) %>%
+  data.frame() %>%
+  setNames('mean_total_abundance') 
+
+```
+
+
+Plot canonical examples for major 3 localisations 
+```{r, fig.height=3.5, fig.width=3.5}
+goi <- c('MALAT1', 'CAPN2', 'PIGT')
+
+
+tern_data %>%
+  names() %>%
+  lapply(function(level){
+    .data <- tern_data[[level]] %>% 
+        filter(external_gene_name %in% goi, condition=='DMSO')
+    
+    if(level=='transcript'){
+      .data <- .data %>%
+        merge(total_transcript_abundance  , by.x='id', by.y='row.names') %>%
+        group_by(external_gene_name) %>%
+        slice_max(order_by='mean_total_abundance')
+    } else{
+      
+    }
+      
+    p <- .data %>%
+      mutate(external_gene_name=factor(external_gene_name, levels=goi)) %>%
+      ggtern(aes(x=Cyt, y=Membrane, z=Nuc, fill=external_gene_name)) +
+      theme_bw(base_size=12) +
+      xlab('Cyt.') +
+      ylab('Mem.') +
+      zlab('Nuc.') +
+      geom_point(size=10, pch=21, colour='grey20') +
+      theme_arrowlarge() +
+      theme_hideticks() +
+      theme_hidetitles() +
+      scale_fill_manual(values=get_cat_palette(3), name='') +
+      theme(strip.background = element_blank(),
+            strip.text.x=element_text(size=15, vjust=2),
+            strip.text.y=element_text(size=15, vjust=2),
+            legend.position='bottom',
+            legend.spacing.x=unit(0.01, 'cm'),
+            legend.text = element_text(
+              margin = margin(r = 10, unit = "pt")))
+      
+    
+    ggsave(paste0('./plots/tern_dmso_examples_', level, '.png'),
+           height=3.5, width=3.5)
+    ggsave(paste0('../../../../../5_manuscript_figures/Figure_2/tern/tern_dmso_examples_', level, '.png'),
+           height=3.5, width=3.5)
+    ggsave(paste0('../../../../../5_manuscript_figures/Figure_2/tern/tern_dmso_examples_', level, '.pdf'),
+           height=3.5, width=3.5)
+    
+    return(p)
+  })
+```
+Ternary plots for mRNA/lncRNA and Control/UPR
+```{r, fig.height=8, fig.width=8}
+
+level <- 'gene'
+tern_data %>%
+  names() %>%
+  lapply(function(level){
+    .data <- tern_data[[level]] %>%
+      mutate(gene_biotype=recode(gene_biotype, 'protein_coding'='mRNA', 'lncRNA'='LncRNA')) %>%
+      mutate(gene_biotype=factor(gene_biotype, levels=c('mRNA', 'LncRNA')))
+      
+    
+    p <- .data %>%
+      ggtern(aes(x=Cyt, y=Membrane, z=Nuc)) +
+      theme_bw(base_size=15) +
+      theme_arrowlarge() +
+      theme_hideticks() +
+      theme_hidetitles() +
+      xlab('Cyt.') +
+      ylab('Mem.') +
+      zlab('Nuc.') +
+      theme(strip.background = element_blank(),
+            strip.text.x=element_text(size=15, vjust=2),
+            strip.text.y=element_text(size=15, vjust=2))
+    
+    p1 <- p + 
+      geom_point(size=0.1, alpha=0.1)  +
+      facet_wrap(~condition)
+    
+    print(p1)
+    ggsave(paste0('./plots/tern_dmso_tg_', level, '.png'),
+               height=3.5, width=3.5)
+    
+    p2 <- p %+% (.data %>%
+                 filter(condition=='DMSO')) +
+      geom_point(size=0.1, alpha=0.1)
+    
+    print(p2)
+    ggsave(paste0('./plots/tern_dmso_', level, '.png'),
+               height=3.5, width=3.5)
+    ggsave(paste0('../../../../../5_manuscript_figures/Figure_2/tern/tern_', level, '.png'),
+               height=3.5, width=3.5)
+    ggsave(paste0('../../../../../5_manuscript_figures/Figure_2/tern/tern_', level, '.pdf'),
+               height=3.5, width=3.5)
+    
+    p3 <- p %+% (.data %>%
+                   filter(condition=='DMSO') %>%
+                   filter(gene_biotype %in% c(
+                     'mRNA', 'LncRNA'))) +
+      geom_point(size=0.1, aes(alpha=gene_biotype, colour=gene_biotype)) +
+      scale_colour_manual(values=get_cat_palette(4)[3:4], guide=FALSE) +
+      scale_alpha_manual(values=c(0.1, 0.25), guide=FALSE) +
+      facet_wrap(~gene_biotype, nrow=1)
+    
+    print(p3)
+    ggsave(paste0('./plots/tern_dmso_lncRNA_mRNA_', level, '.png'),
+               height=3.5, width=3.5)
+    ggsave(paste0('../../../../../5_manuscript_figures/Figure_3/tern/tern_dmso_lncRNA_mRNA_', level, '.png'),
+               height=4.5, width=7)
+    ggsave(paste0('../../../../../5_manuscript_figures/Figure_3/tern/tern_dmso_lncRNA_mRNA_', level, '.pdf'),
+               height=4.5, width=7)
+
+    return(NULL)
+  })
+```
+ECDF for lncRNA vs mRNA Nucleus proportions
+```{r}
+p <- tern_data$transcript %>%
+  filter(condition=='DMSO') %>%
+  filter(gene_biotype %in% c('protein_coding', 'lncRNA')) %>%
+  mutate(gene_biotype=recode(gene_biotype, 'protein_coding'='mRNA', 'lncRNA'='LncRNA')) %>%
+  mutate(gene_biotype=factor(gene_biotype, levels=c('mRNA', 'LncRNA'))) %>%
+  ggplot(aes(Nuc, colour=gene_biotype)) +
+  stat_ecdf() +
+  theme_camprot(border=FALSE, base_size=15, base_family='sans') +
+  scale_colour_manual(values=get_cat_palette(4)[3:4], name='') +
+  theme(legend.position=c(1,0.1), legend.justification=c(1, 0),
+        legend.background=element_blank()) +
+  xlab('Nucleus proportion') +
+  ylab('Fraction of transcripts') +
+  scale_x_continuous(expand=c(0,NA), limits=c(0,1))
+
+ggplot2:::plot.ggplot(p)
+
+ggplot2:::ggsave('../../../../../5_manuscript_figures/Figure_3/edcfs/mrna_lncrna_transcript.png', p, width=4, height=3.5)
+ggplot2:::ggsave('../../../../../5_manuscript_figures/Figure_3/edcfs/mrna_lncrna_transcript.pdf', p, width=4, height=3.5)
+```
+
+

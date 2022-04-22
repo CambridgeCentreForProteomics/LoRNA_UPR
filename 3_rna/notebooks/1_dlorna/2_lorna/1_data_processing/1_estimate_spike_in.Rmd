@@ -1,0 +1,157 @@
+---
+title: "SIRV spike ins"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we consider the proportion of reads aligned/pseudoaligned to the SIRVs.
+  We then use this to estimate the amount of non-rRNA RNA in each fraction
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontfamily: mathpazo
+fontsize: 11pt
+---
+Here we estimate the proportion of spike in RNAs based on the fraction of reads aligned to the SIRV genome
+```{r}
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(camprotR)
+
+```
+*Note: The input files are not part of the repo since they are too large. This notebook cannot be run from the files in the repo alone*
+```{r}
+basedir <- "~/hpc_lorna_tg2/projects/LORNA_TG/quant"
+
+infiles <- Sys.glob(file.path(basedir, "hisat.dir/*.hisat_cleaned.bam.tally.tsv"))
+```
+
+Read in the alignment-based read counts
+```{r}
+rows <- NULL
+for (infile in infiles){
+  sample_name <- gsub(".hisat_cleaned.bam.tally.tsv", "", basename(infile))
+  counts <- read.delim(infile)
+  counts$sample <- sample_name
+  rows[[sample_name]] <- counts
+}
+
+
+
+```
+
+
+```{r}
+counts_all <- data.frame(do.call("rbind", rows))
+counts_all$sample <- as.character(counts_all$sample)
+counts_all$reads <- as.numeric(as.character(counts_all$reads))
+
+counts_all <- counts_all %>% spread(key=type, value=reads) %>% data.frame()
+counts_all$fraction_sirv <- counts_all$SIRV / (counts_all$SIRV + counts_all$Genome)
+
+counts_all <- counts_all %>% separate(sample, into=c("LoRNA", "condition", "replicate", "fraction"), remove=FALSE)
+counts_all$fraction <- ifelse(grepl('Total', counts_all$LoRNA), 'Total', counts_all$fraction)
+counts_all$LoRNA <- ifelse(grepl('Total', counts_all$LoRNA), gsub('Total', 'LoRNA', counts_all$LoRNA), counts_all$LoRNA)
+#counts_all$fraction <- as.numeric(as.character(counts_all$fraction))
+
+```
+
+```{r}
+salmon_quant_infiles <- Sys.glob(file.path(basedir, "salmon.dir/*/quant.sf"))
+
+salmon_quant_infiles <- salmon_quant_infiles[!grepl('deduped', salmon_quant_infiles)]
+salmon_quant_infiles <- salmon_quant_infiles[grepl('dTotal|dLoRNA', salmon_quant_infiles)]
+print(length(salmon_quant_infiles))
+```
+
+Read in the alignment-free abundance estimates.
+```{r}
+transcript_to_gene <- read.delim(file.path(basedir, "geneset.dir/transcript2geneMap.tsv"))
+```
+
+
+```{r}
+
+library(tximport)
+txi <- tximport(salmon_quant_infiles, type="salmon", tx2gene=transcript_to_gene)
+
+sample_ids <- lapply(salmon_quant_infiles, FUN=function(x) gsub("_.*", "", basename(dirname(x))))
+colnames(txi$abundance) <- sample_ids
+
+```
+
+Estimate the fraction of SIRV
+```{r}
+fraction_sirv <- txi$abundance %>% data.frame() %>% tibble::rownames_to_column("gene_id") %>%
+  gather(key="sample", value="TPM", -gene_id) %>%
+  mutate(source=ifelse(grepl("SIRV", gene_id), "SIRV", "Transcriptome")) %>%
+  group_by(source, sample) %>%
+  summarise(TPM=sum(TPM)) %>%
+  spread(key=source, value=TPM) %>%
+  mutate(fraction_sirv = SIRV/(Transcriptome + SIRV)) %>%
+  separate(sample, into=c("LoRNA", "condition", "replicate", "fraction"), remove=FALSE, sep="\\.")
+
+print(fraction_sirv)
+
+fraction_sirv$relative_fraction_sirv <- max(fraction_sirv$fraction_sirv)/fraction_sirv$fraction_sirv 
+```
+
+Let's compare the estimates for % SIRV from the alignment and pseudoalignment-based approaches. 
+```{r}
+counts_all %>%
+  merge(fraction_sirv, by=c('LoRNA', 'condition', 'replicate', 'fraction')) %>%
+  ggplot(aes(fraction_sirv.x, fraction_sirv.y, colour=condition, shape=replicate)) +
+  geom_point() +
+  geom_abline(slope=1, colour='grey', linetype=2) +
+  theme_camprot() +
+  xlab('Alignment') +
+  ylab('Pseudoalignment') +
+  scale_colour_manual(values=get_cat_palette(2))
+```
+
+
+Combine with the RNA-Seq library preparation information to determine the correction factors for the RNA quant
+```{r}
+RNA_used <- read.delim('../../../../experimental_design/RNA_proportions_used.tsv') %>%
+  filter(replicate>1) %>%
+  mutate(replicate=replicate-1, #
+         treatment=recode(treatment, 'TG'='Tg'))
+
+SIRV_used <- readxl::read_excel('../../../../accessory/SIRV_spike_in.xlsx', sheet=1) %>%
+  separate(Sample, into=c('LoRNA', 'condition', 'replicate', 'fraction')) %>%
+  mutate(fraction=as.integer(fraction),
+         replicate=as.integer(replicate))
+
+
+
+
+RNA_metrics <- read.delim('../../../../experimental_design/RNA_metrics.txt', stringsAsFactors=FALSE) %>%
+  filter(Replica>1) %>%
+  mutate(Replica=Replica-1, #
+         Treatment=recode(Treatment, 'TG'='Tg'))
+
+dLoRNA_sirv_correction <- SIRV_used %>%
+  filter(LoRNA=='dLoRNA') %>%
+  merge(unique(RNA_used[,c('treatment', 'replicate', 'merge_fraction', 'proportion_initial_fraction')]),
+        by.x=c('condition', 'replicate', 'fraction'),
+        by.y=c('treatment', 'replicate', 'merge_fraction')) %>%
+  merge(fraction_sirv, by=c('LoRNA', 'condition', 'replicate', 'fraction')) %>%
+  mutate(fraction_non_rRNA=`ng SIRVs`/fraction_sirv/1000,
+         ng_non_rRNA=fraction_non_rRNA/(proportion_initial_fraction/2000)) %>%
+  mutate(ng_RNA=2000*(1/proportion_initial_fraction),
+         LoRNA='dLoRNA') %>%
+  dplyr::select(LoRNA, condition, replicate, fraction, ng_RNA, `ng SIRVs`,
+         fraction_sirv, fraction_non_rRNA, ng_non_rRNA)
+
+
+```
+
+Save for downstream notebooks
+```{r}
+dLoRNA_sirv_correction %>% saveRDS('./results/sirv_correction.rds')
+```
+
+

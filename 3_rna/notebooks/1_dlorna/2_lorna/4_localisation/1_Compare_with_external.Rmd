@@ -1,0 +1,419 @@
+---
+title: "Compare with external data"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we examine the localisation proportions and compare with ENCODE,
+  APEX-RIP, APEX-Seq, CeFraSeq and ER ribosome profiling.
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+```{r}
+library(tidyverse)
+library(camprotR)
+library(ggrepel)
+library(pRoloc)
+library(biomaRt)
+```
+
+First, read in the proportions
+```{r}
+proportions_per_rep <- readRDS('../3_proportional_localisation/results/proportions_per_rep.rds')
+proportions <- readRDS('../3_proportional_localisation/results/proportions.rds')
+```
+
+
+```{r}
+all_datasets <- readRDS('../3_proportional_localisation/results/all_datasets_final.rds')
+```
+
+Rad in the CeFra-Seq data
+```{r}
+cefraseq <- readRDS('../../../../../1_external/13_CeFraSeq/out/cefraseq.rds')
+cefraseq_quant <- readRDS('../../../../../1_external/13_CeFraSeq/out/cefraseq_quant.rds')
+```
+
+Summarise transcript length to gene length
+```{r}
+ensembl <- useEnsembl(biomart="ensembl", version=102, dataset="hsapiens_gene_ensembl")
+
+listAttributes(ensembl)
+transcript_lengths <- getBM(attributes=c('ensembl_transcript_id',
+                                         'ensembl_gene_id',
+                                         'transcript_length',
+                                         'transcript_tsl',
+                                         'transcript_gencode_basic',
+                                         'transcript_appris'),
+                                         mart = ensembl,
+                     filters = 'ensembl_gene_id',
+                     values=unique(proportions$gene$id))
+
+print(length(proportions$gene$id))
+
+gene_length <- transcript_lengths %>% filter(grepl('tsl1', transcript_tsl), transcript_gencode_basic=='GENCODE basic') %>%
+  group_by(ensembl_gene_id) %>%
+  summarise(max_transcript_length=max(transcript_length),
+            min_transcript_length=min(transcript_length),
+            mean_transcript_length=mean(transcript_length))
+
+plot(density(log10(gene_length$max_transcript_length)))
+plot(density(log10(gene_length$min_transcript_length)))
+plot(density(log10(gene_length$mean_transcript_length)))
+
+summary(log10(gene_length$max_transcript_length))
+summary(log10(gene_length$min_transcript_length))
+summary(log10(gene_length$mean_transcript_length))
+
+```
+Identify high confidence cytosolic/membrane-localised RNA (>80%) according to density LoRNA.
+```{r}
+dlorna_cyt <- proportions$gene %>% filter(condition=='DMSO', Cytosol>0.8) %>% pull(id)
+dlorna_mem <- proportions$gene %>% filter(condition=='DMSO', Membrane>0.8) %>% pull(id)
+```
+
+Add gene length to CeFra-Seq results and add columns with loc/total ratio
+```{r}
+
+all_cefraseq_vs_length <- lapply(names(cefraseq_quant), function(cell_line){
+  lapply(names(cefraseq_quant[[cell_line]]), function(assay_type){
+     
+    cefraseq_vs_length <- cefraseq_quant[[cell_line]][[assay_type]]$TPM %>%
+      tibble::rownames_to_column('ensembl_gene_id') %>%
+      mutate(total=Total_1+Total_2) %>%
+      filter(total>2) %>%
+      mutate(cyt_vs_total=(cytosolic_1+cytosolic_2)/total,
+             insoluble_vs_total=(insoluble_cytoplasmic_1+insoluble_cytoplasmic_2)/total,
+             membrane_vs_total=(membrane_1+membrane_2)/total,
+             nuclear_vs_total=(nuclear_1+nuclear_2)/total) %>%
+      merge(gene_length, by='ensembl_gene_id') %>%
+      mutate('cell_line'=cell_line, 'assay'=assay_type)
+    
+    return(cefraseq_vs_length)
+    
+  }) %>% bind_rows()
+}) %>% bind_rows() %>%
+  mutate(assay=recode(assay, 'polyA plus RNA-seq'='polyA RNA-seq'))
+
+head(all_cefraseq_vs_length)
+
+```
+Plot length bias in CeFra-Seq for cytosol RNA
+```{r}
+
+all_cefraseq_vs_length_cyt <- all_cefraseq_vs_length %>%
+  filter(ensembl_gene_id %in% dlorna_cyt)
+
+p_cor <- all_cefraseq_vs_length_cyt %>%
+  group_by(cell_line, assay) %>%
+  summarise(p_cor=cor(log10(mean_transcript_length),
+                      log2(cyt_vs_total), method='pearson'))
+
+p <- all_cefraseq_vs_length_cyt %>%
+  ggplot(aes(log10(mean_transcript_length), log2(cyt_vs_total))) +
+  geom_point(alpha=0.5, size=0.5) +
+  theme_camprot(base_size=15, base_family='sans', border=FALSE) +
+  geom_smooth(method='lm', alpha=0.2, colour=get_cat_palette(2)[2]) +
+  geom_text(aes(label=sprintf("rho~`=`~ %.2f", p_cor)),
+            parse=TRUE,
+            data=p_cor,
+            x=Inf, y=Inf, vjust=1.2, hjust=1.2, size=4,
+            colour=get_cat_palette(2)[2]) +
+  xlab('Transcript length (bp; log10)') +
+  #ylab(sprintf('Cytosol/Total (%s; log2)', quant_type)) +
+  facet_grid(assay~cell_line, scales='free_y') +
+  theme(strip.background=element_blank())
+  
+print(p)
+ggsave('../../../../../5_manuscript_figures/Figure_2/cefraseq/length_bias_cyt.png', height=5, width=5)
+ggsave('../../../../../5_manuscript_figures/Figure_2/cefraseq/length_bias_cyt.pdf', height=5, width=5)
+```
+
+Plot length bias for membrane RNA.
+```{r}
+all_cefraseq_vs_length_mem <- all_cefraseq_vs_length %>%
+  filter(ensembl_gene_id %in% dlorna_mem)
+
+p_cor <- all_cefraseq_vs_length_mem %>%
+  group_by(cell_line, assay) %>%
+  summarise(p_cor=cor(log10(mean_transcript_length),
+                      log2(membrane_vs_total), method='pearson'))
+
+p <- all_cefraseq_vs_length_mem %>%
+  ggplot(aes(log10(mean_transcript_length), log2(membrane_vs_total))) +
+  geom_point(alpha=0.5, size=0.5) +
+  theme_camprot(base_size=15, base_family='sans', border=FALSE) +
+  geom_smooth(method='lm', alpha=0.2, colour=get_cat_palette(2)[2]) +
+  geom_text(aes(label=sprintf("rho~`=`~ %.2f", p_cor)),
+            parse=TRUE,
+            data=p_cor,
+            x=Inf, y=Inf, vjust=1.2, hjust=1.2, size=4,
+            colour=get_cat_palette(2)[2]) +
+  xlab('Transcript length (bp; log10)') +
+  #ylab(sprintf('Membrane/Total (%s; log2)', quant_type)) +
+  facet_grid(assay~cell_line, scales='free_y') +
+  theme(strip.background=element_blank())
+  
+print(p)
+
+ggsave('../../../../../5_manuscript_figures/Figure_2/cefraseq/length_bias_mem.png', height=5, width=5)
+ggsave('../../../../../5_manuscript_figures/Figure_2/cefraseq/length_bias_mem.pdf', height=5, width=5)
+```
+
+
+
+
+Read in nuc/cyt ratios from ENCODE data
+```{r}
+ENCODE_relative_nuc_cyt_ratios <- readRDS('../../../../../1_external/4_ENCODE_Cyt_Nuc/out/cyt_nuc_ratios.rds')
+
+ENCODE_relative_nuc_cyt_ratios_confident <- ENCODE_relative_nuc_cyt_ratios %>%
+  filter(n>2, sd<1)
+```
+
+Raad in APEX-RIP data
+```{r}
+apex_rip <- readRDS('../../../../../1_external/6_APEX/out/apex_rip.rds')
+
+```
+
+Read in APEX-SEQ (Fazal et al 2020) data
+```{r}
+apex_seq_fazal <-  readRDS('../../../../../1_external/6_APEX/out/apex_seq_fazal.rds')
+```
+
+Annotate the proportions with feature data
+```{r}
+proportions_annot <- proportions %>%
+  names() %>%
+  lapply(function(level){
+   proportions[[level]] %>%
+      merge(fData(all_datasets[[level]]$DMSO$corrected), by.x='id', by.y='row.names')
+  })
+
+names(proportions_annot) <- names(proportions)
+```
+
+Subset to lncRNA / mRNA proportions
+```{r}
+lncRNA_proprotions <- proportions_annot %>% lapply(function(x) x %>% filter(gene_biotype=='lncRNA'))
+
+mRNA_proprotions <- proportions_annot %>% lapply(function(x){
+  x <- x %>% filter(gene_biotype=='protein_coding')
+  if('transcript_biotype' %in% colnames(x)){
+    x <- x %>% filter(transcript_biotype=='protein_coding')
+  }
+  return(x)
+})
+
+
+
+```
+
+Reformat APEX-Seq data
+```{r}
+table(apex_seq_fazal$localisation)
+
+apex_seq_max_nuc <- apex_seq_fazal %>%
+  filter(is.finite(p.value), localisation %in% c('NLS', 'NIK', 'LMA', 'NUCP')) %>%
+  group_by(Ensembl_Gene) %>%
+  summarise(max_nuc=max(l2fc, na.rm=TRUE))
+  
+apex_seq_wide <- apex_seq_fazal %>%
+  dplyr::select(Ensembl_Gene, localisation, l2fc) %>%
+  pivot_wider(values_from=l2fc, names_from=localisation) %>%
+  merge(apex_seq_max_nuc, by='Ensembl_Gene')
+
+head(apex_seq_wide)
+```
+
+
+Identify gene ids in all datasets
+```{r}
+
+common_gene_ids <- proportions_annot$gene %>%
+  filter(condition=='DMSO') %>% pull(id) %>%
+  intersect(apex_rip$nuc$gene_id) %>%
+  intersect(apex_seq_wide[is.finite(apex_seq_wide$NLS),]$Ensembl_Gene) %>%
+  intersect((cefraseq$sup4 %>% filter(is.finite(nuc_cyt)) %>% pull(ensembl_gene_id) %>% unique())) %>%
+  intersect(rownames(ENCODE_relative_nuc_cyt_ratios_confident))
+
+print(length(common_gene_ids))
+```
+
+Compare methods for nuc/cytosol ratio.
+```{r}
+to_plot <- proportions_annot$gene %>%
+  filter(condition=='DMSO', id %in% common_gene_ids) %>% 
+  mutate(LoRNA=log2((Nucleus+Nucleolus)/(1-((Nucleus+Nucleolus))))) %>%
+  dplyr::select(id, LoRNA) %>%
+  merge(apex_rip$nuc, by.x='id', by.y='gene_id') %>%
+  merge(ENCODE_relative_nuc_cyt_ratios, by.x='id', by.y='row.names') %>%
+  merge(apex_seq_wide, by.x='id', by.y='Ensembl_Gene') %>%
+  merge(cefraseq$sup4, by.x='id', by.y='ensembl_gene_id') %>%
+  dplyr::select(`APEX-RIP`=log2.fold_change.,
+                `APEX-Seq`=NLS,
+         `CeFra-Seq`=nuc_cyt, mean, LoRNA) %>%
+  pivot_longer(cols=c(LoRNA, `APEX-Seq`,
+                      `APEX-RIP`,
+                      `CeFra-Seq`),
+               names_to='method', values_to='log2foldchange')
+
+cors <- to_plot %>%
+  filter(is.finite(mean), is.finite(log2foldchange)) %>%
+  group_by(method) %>%
+  dplyr::summarise(c=cor(-log2(mean), log2foldchange, method='pearson')) %>%
+  arrange(desc(c)) %>%
+  mutate(method=factor(method, levels=method))
+
+print(cors)
+  
+get_tls <- function(x, y){
+  df  <- data.frame(y, x)
+  pca <- prcomp(~x+y, df)
+  slp <- with(pca, rotation[2,1] / rotation[1,1])
+  int <- with(pca, center[2] - slp*center[1])
+  return(data.frame(slp, int))
+}
+
+tls <- to_plot %>%
+  filter(is.finite(mean), is.finite(log2foldchange)) %>%
+  group_by(method) %>%
+  do(get_tls(-log2(.$mean), .$log2foldchange)) 
+
+to_plot <- to_plot #%>% mutate(method=factor(method, levels=cors$method))
+
+p <- ggplot(mapping = aes(-log2(mean), log2foldchange)) +
+  xlab('ENCODE Nuc/Cyt Frac-Seq (log2)') +
+  ylab('Nuclear enrichment (log2)') 
+
+p1 <- p %+% to_plot + 
+    geom_point(size=0.1, alpha=0.1) +
+  theme_camprot(base_size=15, border=FALSE) +
+  theme(strip.background=element_blank()) +
+  facet_wrap(~method, scales='free') +
+  #geom_text(aes(label=round(c,2)),
+  #          data=cors,
+  #          x=-Inf, y=Inf, vjust=1.2, hjust=-.1,
+  #          colour=get_cat_palette(2)[2], size=4) +
+  geom_abline(aes(intercept=int, slope=slp),
+              data=tls,
+              colour=get_cat_palette(2)[2], size=.5)
+print(p1)
+
+
+print(p1)
+
+ggsave('../../../../../5_manuscript_figures/Figure_2/compare_external/nuc_scatter.png', plot=p1)
+ggsave('../../../../../5_manuscript_figures/Figure_2/compare_external/nuc_scatter.pdf', plot=p1)
+```
+
+Read in Jan et al ER ribosomal profiling data.
+```{r}
+er_ribo_seq <- readRDS('../../../../../1_external/2_ribosome_profiling/out/jan_et_al_2014_ER_ribosome_profiling.rds')
+```
+
+Compare methods for ER/mem localisation
+```{r}
+common_gene_ids_mem <- proportions_annot$gene %>%
+  filter(condition=='DMSO') %>% pull(id) %>%
+  intersect(apex_rip$er$gene_id) %>%
+  intersect(apex_seq_wide[is.finite(apex_seq_wide$ERM),]$Ensembl_Gene) %>%
+  intersect((cefraseq$sup4 %>% filter(is.finite(mem_cyt)) %>% pull(ensembl_gene_id) %>% unique())) %>%
+  intersect((er_ribo_seq %>% filter(is.finite(log2.enrichment)) %>% pull(ensembl_gene_id)))
+
+print(length(common_gene_ids_mem))
+
+
+to_plot_mem <- proportions_annot$gene %>%
+  filter(condition=='DMSO', id %in% common_gene_ids_mem) %>% 
+  mutate(LoRNA=log2(Membrane/(1-Membrane))) %>%
+  dplyr::select(id, LoRNA) %>%
+  merge(apex_rip$er, by.x='id', by.y='gene_id') %>%
+  merge(apex_seq_wide, by.x='id', by.y='Ensembl_Gene') %>%
+  merge(cefraseq$sup4, by.x='id', by.y='ensembl_gene_id') %>%
+  merge(er_ribo_seq, by.x='id', by.y='ensembl_gene_id') %>%
+  dplyr::select(`APEX-RIP`=log2.fold_change.,
+              `APEX-Seq`=ERM,
+              `CeFra-Seq`=mem_cyt,
+              LoRNA, log2.enrichment) %>%
+  pivot_longer(cols=c(LoRNA,
+                      `APEX-Seq`,
+                      `APEX-RIP`,
+                      `CeFra-Seq`),
+               names_to='method', values_to='log2foldchange')
+cors_mem <- to_plot_mem %>%
+  filter(is.finite(log2.enrichment), is.finite(log2foldchange)) %>%
+  filter(log2.enrichment>log2(1.5)) %>%
+  group_by(method) %>%
+  dplyr::summarise(c=cor(log2.enrichment, log2foldchange, method='pearson')) %>%
+  arrange(desc(c)) %>%
+  mutate(method=factor(method, levels=method))
+
+print(cors_mem)
+
+
+p <- to_plot_mem %>%
+  ggplot(aes(log2.enrichment, log2foldchange)) +
+  geom_point(size=0.1, alpha=0.1) +
+  theme_camprot(base_size=15, border=FALSE) +
+  theme(strip.background=element_blank()) +
+  facet_wrap(~method, scales='free') +
+  annotate(geom='rect', xmin=log2(1.5), xmax=Inf, ymin=-Inf, ymax=Inf, fill=get_cat_palette(1), alpha=0.1) +
+  xlab('Jan et al\nER/Cyt Ribo-Seq (log2)') +
+  ylab('Membrane or ER enrichment (log2)') 
+
+print(p)
+
+ggsave('../../../../../5_manuscript_figures/Figure_2/compare_external/mem_scatter.png')
+ggsave('../../../../../5_manuscript_figures/Figure_2/compare_external/mem_scatter.pdf')
+
+p <- to_plot_mem %>%
+  filter(is.finite(log2.enrichment)) %>%
+  ggplot(aes(method, colour=log2.enrichment>log2(1.5), log2foldchange)) +
+  geom_boxplot(notch=TRUE) +
+  theme_camprot(base_size=15, border=FALSE) +
+  scale_colour_manual(values=c('grey', get_cat_palette(1)), name='Jan et al\nER/Cyt Ribo-Seq > 1.5') +
+  xlab('') +
+  ylab('Membrane or ER enrichment (log2)')  +
+  theme(strip.background=element_blank())
+
+print(p)
+
+ggsave('../../../../../5_manuscript_figures/Figure_2/compare_external/mem_box.png')
+ggsave('../../../../../5_manuscript_figures/Figure_2/compare_external/mem_box.pdf')
+```
+
+Plot correlations
+```{r}
+to_plot <- cors %>% mutate(localisation='Nucleus') %>%
+  rbind((cors_mem) %>% mutate(localisation='ER/Membrane'))
+
+lapply(unique(to_plot$localisation), function(loc){
+  gs <- ifelse(loc=='Nucleus', 'ENCODE Nuc/Cyt Frac-Seq ', 'Jan et al ER Ribo-Seq')
+  
+  p <- to_plot %>% filter(localisation==loc) %>%
+    ggplot(aes(method, c, fill=method=='LoRNA')) +
+    scale_fill_manual(values=c('grey', get_cat_palette(1)), guide=FALSE) +
+    geom_bar(stat='identity') +
+    theme_camprot(base_size=15, border=FALSE) +
+    theme(strip.background=element_blank(), panel.grid=element_blank()) +
+    theme(aspect.ratio = 3, axis.text.x=element_text(angle=45, vjust=1, hjust=1)) +
+    xlab('') +
+    ylab(sprintf('Pearson correlation with\n%s', gs))
+  
+  print(p)
+
+  ggsave(sprintf('../../../../../5_manuscript_figures/Figure_2/compare_external/correlation_%s.png', gsub('/', '_', loc)))
+  ggsave(sprintf('../../../../../5_manuscript_figures/Figure_2/compare_external/correlation_%s.pdf', gsub('/', '_', loc)))
+})
+
+
+```
+
+

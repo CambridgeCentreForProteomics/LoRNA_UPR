@@ -1,0 +1,42 @@
+---
+title: "Get all GO terms"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we make a dataframe with all GO terms for all genes.
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+```{r}
+library(biomaRt)
+library(magrittr)
+
+ensembl = useMart("ensembl",dataset="hsapiens_gene_ensembl") 
+```
+Get GO terms annotated in Ensembl
+```{r}
+all_go_genes <- getBM(attributes=c( 'ensembl_gene_id', 'go_id'), mart = ensembl) %>%
+  dplyr::filter(go_id!='')
+
+dim(all_go_genes)
+```
+
+Expand the GO terms to include all ancestors
+```{r}
+all_go_genes_expanded <- all_go_genes %>%
+  camprotR::get_ancestor_go(feature_col='ensembl_gene_id', go_col='go_id', verbose=TRUE)
+
+all_go_genes_expanded <- all_go_genes_expanded %>% dplyr::filter(go_id!='')
+
+dim(all_go_genes_expanded)
+
+saveRDS(all_go_genes_expanded, './all_go_genes_expanded.rds')
+
+```
+

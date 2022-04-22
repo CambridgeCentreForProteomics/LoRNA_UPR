@@ -1,0 +1,343 @@
+---
+title: "What is the light cytosol?"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we consider the RNAs in the 'light cytosol' to try and understand what 
+  this profile represents
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+
+```{r}
+library(tidyverse)
+library(camprotR)
+library(pRoloc)
+library(pRolocdata)
+library(pRolocExt)
+
+```
+Read in the proportions and dLoRNA quantification
+
+```{r}
+proportions <- readRDS('./out/proportions_single_table.rds')
+proportions_per_rep <- readRDS('./out/proportions_per_rep_single_table_flt.rds')
+```
+
+```{r}
+dlorna <- readRDS('../2_clustering/out/all_datasets_with_novel.rds')
+
+```
+
+Annotate the proportions with features from quantification object.
+```{r}
+proportions_annotated <- proportions %>% 
+  names() %>%
+  lapply(function(level){
+    proportion_annotated <- proportions[[level]] %>%
+      rowwise() %>%
+      mutate(Nuc=sum(Nucleus, Nucleolus, na.rm=TRUE)) %>%
+      dplyr::select(id, condition, Cytosol, Nuc, Membrane, Cytosol_Light)
+    
+    if(level=='transcript'){
+      proportion_annotated <- proportion_annotated %>%
+        merge(fData(dlorna[[level]]$DMSO$corrected)[
+          , c('ensembl_gene_id', 'gene_biotype', 'transcript_biotype',
+              'external_gene_name', 'chromosome_name', 'transcript_length')],
+        by.x='id', by.y='row.names')
+    } else{
+      proportion_annotated <- proportion_annotated %>%
+        merge(fData(dlorna[[level]]$DMSO$corrected)[
+          , c('gene_biotype', 'external_gene_name', 'chromosome_name')],
+        by.x='id', by.y='row.names')
+      
+    }
+    
+    return(proportion_annotated)
+    
+  })
+
+names(proportions_annotated) <- names(proportions)
+
+proportions %>% lapply(dim)
+proportions_annotated %>% lapply(dim)
+```
+Read in the ribosome profiling data from Teemu et al (2015).
+```{r}
+
+ribosome_profiling <- readRDS('../../../../../1_external/2_ribosome_profiling/out/Teemu_et_al_2015_ribosome_profiling.rds') %>%
+  dplyr::select(ribo_density)
+
+to_plot <- proportions_annotated$gene %>%
+  filter(condition=='DMSO') %>%
+  dplyr::select(id, Cytosol_Light) %>%
+  merge(ribosome_profiling, by.x='id', by.y='row.names')
+  
+to_plot %>%
+  ggplot(aes(Cytosol_Light, log2(ribo_density))) +
+  geom_point(size=0.25, alpha=0.25) +
+  theme_camprot() +
+  geom_smooth()
+
+p <- to_plot %>%
+  ggplot(aes(Hmisc::cut2(Cytosol_Light, g=10),
+             log2(ribo_density))) +
+  geom_boxplot(notch=TRUE) +
+  theme_camprot(border=FALSE, base_family='sans', base_size=15) +
+  ylab('Ribosome density (log2)') +
+  xlab('\n\n\n') +
+  theme(axis.text.x=element_blank(), axis.ticks.x=element_blank())
+
+print(p)
+
+range <- log2(to_plot$ribo_density)
+range <- range[is.finite(range)]
+
+range_range <- max(range)-min(range)
+tri_min <- max(range) - (range_range*1.15)
+tri_max <- max(range) - (range_range*1.1)
+  
+p2 <- p +
+  annotate(geom='polygon', x=c(1,10,10,1), y=c(tri_min, tri_min, tri_max, tri_min), fill='grey40')  +
+  annotate(geom='text', x=5.5, y=(max(range) - (range_range*1.2)), label='Cytosol light proportion', size=5, vjust=0.5) +
+  coord_cartesian(ylim=c(min(range), max(range)), clip = 'off')
+
+print(p2)
+
+ggsave('../../../../../5_manuscript_figures/Figure_5/ribo_density_length/Ribosome_density.png', p2, width=3.5, height=3.5)
+ggsave('../../../../../5_manuscript_figures/Figure_5/ribo_density_length/Ribosome_density.pdf', p2, width=3.5, height=3.5)
+```
+OK, so there's a clear relationship between cytosol light proportion and the ribsome density, with ~8-fold difference between the bottom and top 10% by cytosol light proportion.
+
+Let's also look at the relationship between transcript length and cytosol light proportion.
+```{r}
+p <- proportions_annotated$transcript %>%
+  filter(condition=='DMSO') %>%
+  ggplot(aes(Hmisc::cut2(Cytosol_Light, g=10),
+             log10(transcript_length))) +
+  geom_boxplot(notch=TRUE) +
+  theme_camprot(border=FALSE, base_family='sans', base_size=15) +
+  ylab('Transcript length (nt;log10)') +
+  xlab('\n\n\n') +
+  theme(axis.text.x=element_blank(), axis.ticks.x=element_blank())
+
+print(p)
+
+range <- proportions_annotated$transcript %>%
+  filter(condition=='DMSO') %>%
+  pull(transcript_length) %>%
+  log10()
+range <- range[is.finite(range)]
+
+range_range <- max(range)-min(range)
+tri_min <- max(range) - (range_range*1.15)
+tri_max <- max(range) - (range_range*1.1)
+  
+p2 <- p +
+  annotate(geom='polygon', x=c(1,10,10,1), y=c(tri_min, tri_min, tri_max, tri_min), fill='grey40')  +
+  annotate(geom='text', x=5.5, y=(max(range) - (range_range*1.2)), label='Cytosol light proportion', size=5, vjust=0.5) +
+  coord_cartesian(ylim=c(min(range), max(range)), clip = 'off')
+
+print(p2)
+
+ggsave('../../../../../5_manuscript_figures/Figure_5/ribo_density_length/length.png', p2, width=3.5, height=3.5)
+ggsave('../../../../../5_manuscript_figures/Figure_5/ribo_density_length/length.pdf', p2, width=3.5, height=3.5)
+
+```
+
+
+
+```{r}
+deseq_results <- readRDS('../../1_Differential_abundance/results/DESeq2_results_no_lf_compression.rds')
+```
+
+```{r, fig.height=10, fig.width=10}
+to_plot_vs_exp_diff <- mean_proportions_to_plot %>%
+  names() %>%
+  lapply(function(level){
+    x_key <- ifelse(level=='transcript', 'ensembl_gene_id', 'id')
+
+    mean_proportions_to_plot[[level]] %>%
+      #dplyr::select(id, ensembl_gene_id, biotype, condition, localisation, proportion) %>%
+      pivot_wider(names_from=condition, values_from=proportion) %>%
+      merge(deseq_results, by.x=x_key, by.y='row.names') %>%
+      mutate(diff=Tg-DMSO)
+  })
+
+names(to_plot_vs_exp_diff) <- names(mean_proportions_to_plot)
+
+to_plot_vs_exp_diff %>%
+  names() %>%
+  lapply(function(level){
+    to_plot_vs_exp_diff[[level]] %>%
+      filter(baseMean>2^10, biotype %in% c('lncRNA', 'protein_coding')) %>%
+      ggplot(aes(log2FoldChange, diff)) +
+      geom_point(aes(size=biotype, alpha=biotype)) +
+      theme_camprot() +
+      scale_size_manual(values=c(0.5, 0.1), guide=FALSE) +
+      scale_alpha_manual(values=c(0.5, 0.1), guide=FALSE) +
+      facet_grid(biotype~localisation) +
+      geom_vline(xintercept=0, linetype=2, colour='grey') +
+      geom_hline(yintercept=0, linetype=2, colour='grey') +
+      geom_smooth() +
+      coord_cartesian(xlim=c(-0.5, 1)) +
+      xlab('Change in RNA abundance (log2)') +
+      ylab('Change in localisation')
+  })
+```
+OK, so it looks like those protein-coding genes/transcripts that start in the membrane and move towards the Cytosol_Light might have slight increase in abundance overall. That would be unexpected. Let's look at that more directly
+```{r}
+mean_proportions_to_plot %>% names() %>%
+  lapply(function(level){
+  
+  membrane_rnas <- mean_proportions_to_plot[[level]] %>%
+    filter(biotype=='protein_coding', condition=='DMSO', localisation=='Membrane', proportion>=0.5) %>%
+    pull(id)
+  
+  to_plot_vs_exp_diff[[level]] %>%
+    filter(localisation=='Cytosol_Light', id %in% membrane_rnas) %>%
+    filter(baseMean>2^10) %>%
+    ggplot(aes(diff, log2FoldChange)) +
+    geom_point() +
+    theme_camprot() +
+    geom_vline(xintercept=0, linetype=2, colour='grey') +
+    geom_hline(yintercept=0, linetype=2, colour='grey') +
+    geom_smooth() +
+    ggtitle(level) +
+    #coord_cartesian(ylim=c(-0.5, 1)) +
+    ylab('Change in RNA abundance (log2)') +
+    xlab('Change in Cytosol Light proportion')
+})
+```
+Hmmm, so no relationship whatsoever between the amount of movement towards the cytosol light and the change in RNA abundance. So the overall higher abundance for membrane-localised RNAs is independent of the relocalisation. An interesting observation nonetheless.
+
+
+```{r}
+
+
+Hubstenberger_et_al <- readRDS('../../../../../1_external/3_granules/Hubstenberger_et_al_2017/hub_p_body_rna.rds')
+Hubstenberger_et_al_enr <- Hubstenberger_et_al %>% filter(enr>3, fdr<0.01)
+print(nrow(Hubstenberger_et_al_enr))
+```
+
+```{r}
+colours <- readRDS('../../../../../6_shiny_app/out/shiny_colours.rds')$RNA[1:6]
+
+obj <- dlorna$gene$DMSO$corrected
+fData(obj)$markers_inc_hub <- fData(obj)$markers
+fData(obj)$markers_inc_hub[
+  ((getMarkers(obj, 'markers')=='unknown') &
+     (rownames(obj) %in% Hubstenberger_et_al_enr$ensembl_gene_id))] <- 'Hubstenberger et al P-body'
+fData(obj)$markers_inc_hub <- factor(fData(obj)$markers_inc_hub,
+                                       levels=c(getMarkerClasses(obj, 'markers'),
+                                                c('Hubstenberger et al P-body', 'unknown')))
+
+
+p <- mrkConsProfiles(obj, fcol='markers_inc_hub') %>%
+  data.frame() %>%
+  tibble::rownames_to_column('markers') %>%
+  pivot_longer(cols=-markers) %>%
+  mutate(markers=factor(remove_x(markers), levels=levels(fData(obj)$markers_inc_hub))) %>%
+  mutate(markers=recode(markers, 'Cytosol_Light'='Granule')) %>%
+  merge(pData(obj), by.x='name', by.y='sample') %>%
+  ggplot(aes(fraction, value, colour=markers, group=interaction(markers, replicate))) +
+  geom_line(size=1) +
+  theme_camprot(border=FALSE, base_size=15, base_family='sans' ) +
+  facet_wrap(~(paste0('Rep. ', replicate)), nrow=1) +
+  scale_colour_manual(values=c(colours, 'black'), name='') +
+  theme(strip.background=element_blank()) +
+  xlab('Fraction') +
+  ylab('Mean abundance\n(sum norm.)')
+      
+print(p)
+ggsave('../../../../../5_manuscript_figures/Figure_5/external/Hubstenberger.png', width=9, height=3.5)
+ggsave('../../../../../5_manuscript_figures/Figure_5/external/Hubstenberger.pdf', width=9, height=3.5)
+```
+
+
+
+
+```{r}
+
+for(condition in names(dlorna$gene)){
+  for(correction in names(dlorna$gene[[condition]])){
+  .data <- dlorna$gene[[condition]][[correction]]
+
+    title <- paste(condition, correction, sep=', ')
+    
+    fData(.data)$markers_inc_hub <- fData(.data)$markers
+    fData(.data)$markers_inc_hub[
+      ((getMarkers(.data, 'markers')=='unknown') &
+         (rownames(.data) %in% Hubstenberger_et_al_enr$ensembl_gene_id))] <- 'Hubstenberger P-body'
+    fData(.data)$markers_inc_hub <- factor(fData(.data)$markers_inc_hub,
+                                           levels=c(getMarkerClasses(.data, 'markers'),
+                                                    c('Hubstenberger P-body', 'unknown')))
+    
+    .pca <- plot2D(.data, fcol='markers_inc_hub', col=c(colours, 'black'), main=title)
+    addLegend(.data, where='bottomleft', fcol='markers_inc_hub', col=c(colours, 'black'))
+    
+    p <- plot_marker_profiles(.data[fData(.data)$markers_inc_hub!='unknown',], 'markers_inc_hub',
+                         group_by='replicate', alpha=c(rep(0.25, 6), 0.05), facet_by='markers') +
+      scale_colour_manual(values=c(colours, 'black')) +
+      scale_x_discrete(labels=pData(.data)$fraction) +
+      ggtitle(title)
+    
+    
+    p2 <- plot_marker_profiles(.data[fData(.data)$markers_inc_hub!='unknown',], 'markers_inc_hub',
+                         group_by='replicate', alpha=c(rep(0.25, 6), 0.05)) +
+      scale_colour_manual(values=c(colours, 'black')) +
+      scale_x_discrete(labels=pData(.data)$fraction) +
+      ggtitle(title)
+    
+    p3 <- plot_marker_profiles(.data[fData(.data)$markers_inc_hub!='unknown',], 'markers_inc_hub',
+                         group_by='replicate', plot_all=FALSE) +
+      scale_colour_manual(values=c(colours, 'black')) +
+      scale_x_discrete(labels=pData(.data)$fraction) +
+      ggtitle(title)
+
+    print(p)
+    print(p2)
+    print(p3)
+  }
+  
+}
+
+```
+
+Any relationship between relocalisation to membrane and change in RNA abundance?
+```{r}
+RNA_abundance_change <- readRDS('../../1_Differential_abundance/results/DESeq2_results.rds')
+```
+
+```{r}
+
+proportions$gene %>%
+  dplyr::select(id, condition, loi=Cytosol_Light) %>%
+  pivot_wider(names_from=condition, id_cols=id, values_from=loi) %>%
+  filter(is.finite(DMSO), is.finite(Tg)) %>%
+  mutate(change=Tg-DMSO) %>%
+  merge(RNA_abundance_change, by.y='row.names', by.x='id') %>%
+  filter(Tg>0.5) %>%
+  ggplot(aes(change, log2FoldChange)) +
+  geom_point(alpha=0.5, size=0.5) +
+  theme_camprot() +
+  xlab('Membrane proportion (Tg/DMSO)') +
+  ylab('RNA abundance (Tg/DMSO; log2)')
+ 
+
+x <- proportions$gene %>%
+  merge(RNA_abundance_change, by.y='row.names', by.x='id') %>%
+  filter(padj<0.05, log2FoldChange<0) %>%
+  arrange(log2FoldChange)
+
+print(x %>% filter(x$id %in% x$id[duplicated(x$id)]))
+```
+
+
+

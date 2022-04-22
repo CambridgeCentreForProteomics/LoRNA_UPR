@@ -1,0 +1,672 @@
+---
+title: "Inspect the marker set separation"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we visually inspect the marker set separation using linear profile plots,
+  PCA and t-SNE. After this, we manually inspect any outlier markers and curate the markers.
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+```{r}
+library(UniProt.ws)
+library(tidyverse)
+library(camprotR)
+library(pRoloc)
+library(pRolocdata)
+library(pRolocExt)
+library(biomaRt)
+
+```
+
+Read in protein-level data
+```{r}
+combined_protein_res <- readRDS('../../out/combined_protein_res.rds')
+#protein_res <- readRDS('../../out/protein_res.rds')
+psm_res_filt <- readRDS('../../out/psm_res_filt.rds')
+
+human_go <- readRDS('../../../shared_files/h_sapiens_go_full.rds')
+```
+
+First, we'll add some extra details onto the feature data. Below we extract the protein names and functions from Uniprot...
+```{r, eval=FALSE}
+up <- UniProt.ws(taxId=9606)
+
+keys <- combined_protein_res %>% lapply(rownames) %>% unlist() %>% unique()
+columns <- c("UNIPROTKB", "GENES", 'ENTRY-NAME', 'PROTEIN-NAMES', 'FUNCTION')
+kt <- "UNIPROTKB"
+protein_info <- UniProt.ws::select(up, keys, columns, kt)
+
+protein_info %>% saveRDS('../../out/protein_info.rds')
+
+```
+
+
+```{r}
+protein_info <- readRDS('../../out/protein_info.rds')
+
+```
+
+... and then add this information to the feature data. This will come in useful later when we want to consider individual proteins.
+```{r}
+combined_protein_res %>% lapply(dim)
+combined_protein_res %>% lapply(function(x) dim(fData(x)))
+
+combined_protein_res <- combined_protein_res %>% lapply(function(x){
+  new_feature_data <- fData(x) %>%
+    merge(protein_info, by.x='row.names', by.y='UNIPROTKB', all.x=TRUE) %>%
+    tibble::column_to_rownames('Row.names')
+  
+  fData(x) <- new_feature_data[rownames(x),]
+  
+  return(x)
+  
+})
+
+combined_protein_res %>% lapply(dim)
+combined_protein_res %>% lapply(function(x) dim(fData(x)))
+```
+```{r}
+head(fData(combined_protein_res$DMSO)[,174:177])
+```
+
+
+First, let's inspect the mean marker set profiles. 
+```{r}
+#get order for Control
+.data <- combined_protein_res$DMSO %>%
+    filterNA()
+  
+.data <- .data %>%
+  normalise('sum')
+
+hc <- mrkHClust(.data, plot = FALSE)
+mm <- getMarkerClasses(.data)
+ord <- levels(factor(mm))[order.dendrogram(hc)]
+
+  
+for(condition in names(combined_protein_res)){
+  
+  .data <- combined_protein_res[[condition]]  %>% filterNA()
+  
+  #colnames(.data) <- 1:10
+  hc <- mrkHClust(.data, plot = FALSE)
+  mm <- getMarkerClasses(.data)
+  
+  fmat <- mrkConsProfiles(.data)
+  
+  p <- plotConsProfiles(fmat, order = ord, plot=FALSE) +
+    scale_fill_continuous(name='Sum norm.\nintensity',
+                          low = "white", high=get_cat_palette(1),
+                          limits=c(0,0.8),
+                          breaks=seq(0,0.8,0.2)) +
+    scale_x_discrete(labels=pData(.data)$fraction) +
+    ggtitle(condition) +
+    theme_camprot(base_size=15) +
+    geom_vline(xintercept=8.5) +
+    geom_vline(xintercept=16.5) +
+    theme(axis.text.x=element_text(angle=45, hjust=1, vjust=1)) +
+    xlab('')
+
+  print(p)
+}
+
+```
+
+
+
+Now, let's inspect the linear profiles in more detail
+```{r, fig.height=6, fig.width=8}
+for(condition in names(combined_protein_res)){
+  
+  .data <- combined_protein_res[[condition]] %>% filterNA()
+  .data <- .data[fData(.data)$markers!='unknown',]
+  
+  alphas <- (length(getMarkerClasses(combined_protein_res[[condition]])) *
+               classWeights(combined_protein_res[[condition]]))
+  
+  p <- .data %>%
+    plot_marker_profiles(facet_by='markers', group_by='replicate', alpha=alphas) +
+    ggtitle(condition) +
+    scale_x_discrete(labels=pData(combined_protein_res[[condition]])$fraction) +
+    theme_camprot(base_size=12) +
+    theme(axis.text.x=element_text(angle=90, vjust=0.5, hjust=1), legend.position='none') +
+    geom_vline(xintercept=8.5, linetype=2, lwd=0.25) +
+    geom_vline(xintercept=16.5, linetype=2, lwd=0.25) +
+    scale_colour_manual(values=getStockcol())
+
+  print(p)
+}
+
+```
+
+
+
+PCA plots 
+```{r, fig.height=7, fig.width=10}
+for(condition in names(combined_protein_res)){
+    
+    if(condition=='Control'){
+      legend.position='topleft'
+    }
+    else{
+      legend.position='bottomleft'
+    }
+  
+    combined_protein_res[[condition]] %>% plot2D(cex=1)
+    addLegend(combined_protein_res[[condition]], where=legend.position)
+    title(condition)
+    
+    combined_protein_res[[condition]] %>% plot2D(cex=1, dims=c(3,4))
+    addLegend(combined_protein_res[[condition]], where=legend.position)
+    title(condition)
+    
+}
+```
+
+Let's also use t-SNE to visualise the marker separation.
+```{r, fig.height=10, fig.width=10, eval=FALSE}
+
+perps <- c(2, 5, 10, 20, 50)
+
+for(condition in names(combined_protein_res)){
+  
+    par(mfrow = c(3, 2))
+    combined_protein_res[[condition]] %>% plot2D(main = paste(condition, ' - ', "PCA"))
+    sapply(perps,
+           function(perp) {
+             combined_protein_res[[condition]] %>% normalise('sum') %>%
+               plot2D(method = "t-SNE", methargs = list(perplexity = perp))
+             title(main = paste(condition, ' - ', "t-SNE, perplexity", perp))
+           })
+}
+```
+
+Now let's manually assess the marker protein outliers to see whether these should really be considered marker proteins. 
+
+
+
+
+First, let's re-inspect the linear profiles, with no alpha so we can see the outliers more clearly
+```{r, fig.height=10, fig.width=10}
+plot_marker_profiles_tg <- function(keep_markers, data=combined_protein_res){
+    for(condition in names(data)){
+    
+    .data <- data[[condition]] %>% filterNA()
+    .data <- .data[fData(.data)$markers %in% keep_markers,]
+  
+    p <- .data %>%
+      plot_marker_profiles(facet_by='markers', group_by='replicate', alpha=1) +
+      ggtitle(condition) +
+      scale_x_discrete(labels=pData(data[[condition]])$fraction) +
+      theme_camprot(base_size=12) +
+      theme(axis.text.x=element_text(angle=90, vjust=0.5, hjust=1), legend.position='none') +
+      geom_vline(xintercept=8.5, linetype=2, lwd=0.25) +
+      geom_vline(xintercept=16.5, linetype=2, lwd=0.25)  +
+      scale_colour_manual(values=getStockcol())
+  
+    print(p)
+  }
+}
+
+plot_marker_profiles_tg(getMarkerClasses(combined_protein_res[[condition]]))
+```
+
+We'll define a function to plot profiles for a subset of proteins
+```{r}
+plot_marker_profiles_subset <- function(class, value, combined_protein_res, direction='gt', fraction='8'){
+  both_exprs_df <- lapply(names(combined_protein_res), function(condition){
+    x <- combined_protein_res[[condition]]
+      
+    x <- x[fData(x)$markers==class]
+      
+    if(direction=='gt'){
+      x <- x[apply(exprs(x)[,pData(x)$fraction==fraction,drop=FALSE], MARGIN=1, FUN=function(x) any(x>value, na.rm=TRUE)),]
+    } else if(direction=='lt'){
+      x <- x[apply(exprs(x)[,pData(x)$fraction==fraction,drop=FALSE], MARGIN=1, FUN=function(x) any(x<value, na.rm=TRUE)),]
+    } else{
+      stop('direction must be gt (greater than) or lt (less than)')
+    }
+    
+    exprs_df <- exprs(x)
+    f_df <- fData(x) %>% dplyr::select(Master.Protein.Accessions)
+    
+    exprs_df <- exprs_df %>%
+      data.frame() %>%
+      tibble::rownames_to_column('id') %>%
+      tidyr::pivot_longer(-id, names_to='sample', values_to='abundance') %>%
+      mutate(sample=factor(camprotR::remove_x(sample), levels=colnames(x)))
+    
+    exprs_df <- merge(exprs_df, f_df, by.x="id", by.y="row.names") %>%
+      merge(pData(x), by.x='sample', by.y='row.names') %>%
+      mutate(fraction=factor(fraction, levels=unique(pData(x)$fraction)),
+             condition=condition)
+    
+  }) %>% do.call(what='rbind')
+  
+  
+   p <- ggplot(both_exprs_df, aes(fraction, abundance,
+                             colour=factor(replicate), group=factor(replicate))) +
+      camprotR::theme_camprot(base_size=10) +
+      geom_line() +
+      theme(aspect.ratio=1,
+            axis.text.x=element_text(angle=45, vjust=1, hjust=1, size=10))  +
+      xlab("Sample") +
+      ylab("Abundance") +
+     facet_wrap(condition~Master.Protein.Accessions)
+   
+   return(list('p'=p, 'both_exprs_df'=both_exprs_df))
+}
+```
+
+OK, let's start with the cytosolic markers. Outlier proteins have sum-normalised fraction abundances < 0.3
+```{r}
+cyto_outliers <- plot_marker_profiles_subset(class='CYTOSOL', value=0.15, combined_protein_res, direction='lt')
+print(cyto_outliers$p)
+print(unique(cyto_outliers$both_exprs_df$Master.Protein.Accessions))
+```
+Let's explore these three in detail to see why they are outliers. First, we'll check the PSM level profiles for each protein. We'll define another function for this.
+```{r}
+
+
+plot_foi_psms <- function(foi){
+  all_exprs_df <- lapply(names(psm_res_filt[paste0('Rep', 1:3)]), function(replicate){
+
+    x <- psm_res_filt[[replicate]] %>%
+      center_normalise_to_ref(medians=get_medians(psm_res_filt[[replicate]])) %>%
+      filterNA(pNA=0)
+    x <- x[fData(x)$Master.Protein.Accessions %in% foi,]
+    
+    exprs_df <- exprs(x)
+      f_df <- fData(x) %>% dplyr::select(Master.Protein.Accessions)
+      
+    exprs_df <- exprs_df %>%
+      data.frame() %>%
+      tibble::rownames_to_column('id') %>%
+      tidyr::pivot_longer(-id, names_to='sample', values_to='abundance') %>%
+      mutate(sample=factor(camprotR::remove_x(sample), levels=colnames(x)))
+    
+    exprs_df <- merge(exprs_df, f_df, by.x="id", by.y="row.names") %>%
+      merge(pData(x), by.x='sample', by.y='row.names') %>%
+      mutate(fraction=factor(fraction, levels=unique(pData(x)$fraction)),
+             replicate=replicate) %>%
+      group_by(condition, id) %>%
+      mutate(norm_abundance=abundance/sum(abundance))
+  
+    exprs_df
+  }) %>% do.call(what='rbind')
+  
+  p <- ggplot(all_exprs_df, aes(fraction, norm_abundance, group=interaction(condition, id), colour=condition)) +
+    camprotR::theme_camprot(base_size=10) +
+    geom_line() +
+    theme(aspect.ratio=1,
+          axis.text.x=element_text(angle=45, vjust=1, hjust=1, size=10))  +
+    xlab("Sample") +
+    ylab("Abundance") +
+   facet_grid(Master.Protein.Accessions~replicate)
+
+  print(p)
+}
+```
+
+```{r, fig.height=7, fig.width=7}
+plot_foi_psms(c('P15374', 'P34932', 'Q16543', 'Q96C90', 'Q9BRA2', 'Q9NT62', "P28838"))
+```
+
+
+Q9NT62:
+https://www.uniprot.org/uniprot/Q9NT62
+Ubiquitin-like-conjugating enzyme ATG3
+HPA reckons cytosol + PM in U2OS: https://www.proteinatlas.org/ENSG00000144848-ATG3/cell
+Seems very reasonable to remove this marker
+
+P15374:
+Ubiquitin carboxyl-terminal hydrolase isozyme L3
+HPA says nucleoplasm & cytosol
+https://www.proteinatlas.org/ENSG00000118939-UCHL3/cell
+Seems very reasonable to remove this marker
+
+P34932:
+Heat shock 70 kDa protein 4
+HPA says nucleoplasm & cytosol
+https://www.proteinatlas.org/ENSG00000170606-HSPA4/cell
+Seems very reasonable to remove this marker
+
+Q16543:
+Quite variable PSM profiles
+Hsp90 co-chaperone Cdc37
+Only cytosol according to uniprot and HPA
+
+Q96C90:
+Protein phosphatase 1 regulatory subunit 14B
+Uniprot says only cytosol. No HPA
+
+
+Q9BRA2:
+Thioredoxin domain-containing protein 17
+Protein phosphatase 1 regulatory subunit 14B
+Uniprot says only cytosol. No HPA
+
+P28838:
+Cytosol aminopeptidase
+Despite the name, HPA suggests non-cytosol localisations too:
+https://www.proteinatlas.org/ENSG00000002549-LAP3/cell
+Seems very reasonable to remove this marker
+
+
+Define a vector which will hold the names of all marker proteins to be removed
+```{r}
+remove_markers <- c('Q9NT62', 'P15374', 'P34932', 'P28838')
+```
+
+Next, ER markers. Outlier proteins have sum-normalised fraction 2 abundances < 0.2. ER should peak in fraction 2
+```{r}
+plot_marker_profiles_tg('ER')
+```
+
+```{r, fig.height=6, fig.width=6}
+
+
+er_outliers <- plot_marker_profiles_subset(class='ER', value=0.2, combined_protein_res, direction='lt', fraction='2')
+print(er_outliers$p)
+print(unique(er_outliers$both_exprs_df$Master.Protein.Accessions))
+```
+All look like outliers:
+
+O00400:
+Acetyl-coenzyme A transporter 1
+GO says ER, Golgi, PM
+HPA says nucleoplasm!
+https://www.proteinatlas.org/ENSG00000169359-SLC33A1/cell
+Reasonable to remove this one
+
+O60762:
+Dolichol-phosphate mannosyltransferase subunit 1
+GO says ER, Nucleus. No HPA data
+Reasonable to remove this one
+
+Q9P035:
+Very-long-chain (3R)-3-hydroxyacyl-CoA dehydratase 3
+GO says ER, Nucleus.
+Reasonable to remove this one
+
+Q86UL3:
+Glycerol-3-phosphate acyltransferase 4
+Uniprot and GO say ER only. No HPA.
+No justificatin for removing
+
+
+OK, so on the basis of the above, the following markers will be removed
+```{r}
+remove_er_markers <- c("O00400", "Q96JJ7", "Q9P035")
+remove_markers <- c(remove_markers, remove_er_markers)
+```
+
+
+Next, Golgi markers. Outlier proteins have sum-normalised Fraction 1 abundances < 0.3. Golgi should peak in Fraction 1.
+```{r}
+plot_marker_profiles_tg('GOLGI')
+```
+
+```{r}
+ga_outliers <- plot_marker_profiles_subset(combined_protein_res, class='GOLGI', direction='lt', value=0.3, fraction=1)
+print(ga_outliers$p)
+print(unique(ga_outliers$both_exprs_df$Master.Protein.Accessions))
+```
+OK, the ones below look like outliers.
+
+O60704:
+Protein-tyrosine sulfotransferase 2
+GO says ER, Golgi. No HPA.
+Reasonable to remove
+
+Q96G01:
+Protein bicaudal D homolog 1
+GO has loads of localisations. HPA says vesicles.
+Reasonable to remove
+
+Let's remove both these markers
+```{r}
+remove_markers <- c(remove_markers, c('O60704', 'Q96G01'))
+```
+
+Next, Mitochondria markers. Outlier proteins have sum-normalised fraction 2 abundances < 0.2. Mt should peak in fraction 2
+```{r}
+plot_marker_profiles_tg('MITOCHONDRIA')
+```
+
+```{r, fig.height=6, fig.width=6}
+mt_outliers <- plot_marker_profiles_subset(combined_protein_res, class='MITOCHONDRIA', direction='lt', value=0.2, fraction='2')
+print(mt_outliers$p)
+print(unique(mt_outliers$both_exprs_df$Master.Protein.Accessions))
+
+mt_foi <- unique(mt_outliers$both_exprs_df$Master.Protein.Accessions)
+plot_foi_psms(mt_foi)
+
+```
+P19367:
+Hexokinase-1
+This protein sits on the cytosolic face of the Mt, which could explain the odd profile. Let's remove
+
+```{r}
+remove_markers <- c(remove_markers, 'P19367')
+```
+
+Next, PM markers. Outlier proteins have sum-normalised fraction 8 abundance >0.05. PM should peak in fractions 1 & 2.
+```{r}
+plot_marker_profiles_tg('PM')
+```
+
+```{r, fig.height=6, fig.width=6}
+pm_outliers <- plot_marker_profiles_subset(combined_protein_res=combined_protein_res, class='PM', direction='gt', value=0.05, fraction=8)
+print(pm_outliers$p)
+print(unique(pm_outliers$both_exprs_df$Master.Protein.Accessions))
+
+pm_foi <- unique(pm_outliers$both_exprs_df$Master.Protein.Accessions)
+plot_foi_psms(pm_foi)
+
+
+```
+
+Q96CW1:
+GO has lots of localisations so we'll remove this one
+
+Q96QZ7:
+Membrane-associated guanylate kinase, WW and PDZ domain-containing protein 1
+GO and HPA says PM & Nucleus
+
+The rest all have roughly PM profiles so we'll leave them
+
+```{r}
+remove_markers <- c(remove_markers, c('Q96CW1', 'Q96QZ7'))
+```
+
+
+
+From the TG PCA, it appears the ribosome may have two subclusters, those these aren't clearly visible in the linear plot. Are these ribosomal subunits?   
+```{r}
+plot_marker_profiles_tg('RIBOSOME')
+markers_df <- read.delim("../../../shared_files/markers_9B_hyperLOPIT_vs_DC.csv", sep=",", header=FALSE, stringsAsFactors=FALSE)[,1:2]
+ribo_40_s <- markers_df %>% filter(V2=='RIBOSOME 40S') %>% pull(V1)
+ribo_60_s <- markers_df %>% filter(V2=='RIBOSOME 60S') %>% pull(V1)
+
+combined_protein_res <- combined_protein_res %>% lapply(function(x){
+  fData(x)$markers_split_ribo <- fData(x)$markers 
+  fData(x)$markers_split_ribo[rownames(x) %in% ribo_40_s] <- 'RIBOSOME 40S'
+  fData(x)$markers_split_ribo[rownames(x) %in% ribo_60_s] <- 'RIBOSOME 60S'
+  x
+})
+
+plot2D(combined_protein_res$Thapsigargin, fcol='markers_split_ribo')
+plot2D(combined_protein_res$DMSO, fcol='markers_split_ribo')
+```
+
+Now, let's update the marker proteins to remove filtered markers.
+```{r}
+print(length(remove_markers))
+
+combined_protein_res %>% lapply(function(x){
+  table(getMarkers(x)=='unknown')
+})
+
+combined_protein_res_updated_markers <- combined_protein_res %>% lapply(function(x){
+  
+  fData(x)$markers[rownames(x) %in% remove_markers] <- 'unknown'
+  
+  fData(x)$markers_split_ribo[rownames(x) %in% remove_markers] <- 'unknown'
+  getMarkers(x)
+  getMarkers(x, 'markers_split_ribo')
+  x
+})
+
+combined_protein_res_updated_markers %>% lapply(function(x){
+  table(getMarkers(x)=='unknown')
+})
+
+```
+
+```{r, fig.height=6, fig.width=6}
+for(condition in names(combined_protein_res)){
+    
+    if(condition=='Control'){
+      legend.position='topleft'
+    }
+    else{
+      legend.position='bottomleft'
+    }
+  
+    combined_protein_res[[condition]] %>% filterNA() %>% plot2D(fcol='markers_split_ribo', cex=1, col=getStockcol())
+    addLegend(combined_protein_res[[condition]], fcol='markers_split_ribo', where=legend.position, col=getStockcol())
+    title(condition)
+    
+    combined_protein_res_updated_markers[[condition]] %>% filterNA() %>% plot2D(fcol='markers_split_ribo', cex=1, col=getStockcol())#[c(1,2,13,3:11)])
+    addLegend(combined_protein_res_updated_markers[[condition]],fcol='markers_split_ribo', where=legend.position, col=getStockcol())
+    title(condition)
+    
+    combined_protein_res[[condition]] %>% filterNA() %>% plot2D(fcol='markers_split_ribo', cex=1, dims=c(3,4), col=getStockcol())
+    addLegend(combined_protein_res[[condition]],fcol='markers_split_ribo', where=legend.position, col=getStockcol())
+    title(condition)
+    
+    combined_protein_res_updated_markers[[condition]] %>% filterNA() %>% plot2D(fcol='markers_split_ribo', cex=1, dims=c(3,4),
+                                                                                col=getStockcol())
+    addLegend(combined_protein_res_updated_markers[[condition]],fcol='markers_split_ribo', where=legend.position, col=getStockcol())
+    title(condition)
+    
+    .data <- combined_protein_res_updated_markers[[condition]] %>% filterNA()
+    .data <- .data[fData(.data)$markers_split_ribo!='unknown',]
+  
+    alphas <- (length(getMarkerClasses(combined_protein_res_updated_markers[[condition]], fcol='markers_split_ribo')) *
+                 classWeights(combined_protein_res_updated_markers[[condition]], fcol='markers_split_ribo'))
+  
+      
+    p <- .data %>%
+      plot_marker_profiles(fcol='markers_split_ribo', facet_by='markers', group_by='replicate', alpha=alphas) +
+      ggtitle(condition) +
+      scale_x_discrete(labels=pData(combined_protein_res_updated_markers[[condition]])$fraction) +
+      theme_camprot(base_size=12) +
+      theme(axis.text.x=element_text(angle=90, vjust=0.5, hjust=1), legend.position='none') +
+      geom_vline(xintercept=5.5, linetype=2, lwd=0.25) +
+      geom_vline(xintercept=10.5, linetype=2, lwd=0.25) +
+      scale_colour_manual(values=getStockcol())
+  
+    print(p)
+    
+    
+    .data <- .data[grepl('RIBOSOME', fData(.data)$markers_split_ribo),]
+  
+    alphas <- (length(getMarkerClasses(combined_protein_res_updated_markers[[condition]], fcol='markers_split_ribo')) *
+                 classWeights(combined_protein_res_updated_markers[[condition]], fcol='markers_split_ribo'))
+  
+      
+    p <- .data %>%
+      plot_marker_profiles(fcol='markers_split_ribo', group_by='replicate', alpha=alphas) +
+      ggtitle(condition) +
+      scale_x_discrete(labels=pData(combined_protein_res_updated_markers[[condition]])$fraction) +
+      theme_camprot(base_size=12) +
+      theme(axis.text.x=element_text(angle=90, vjust=0.5, hjust=1)) +
+      geom_vline(xintercept=5.5, linetype=2, lwd=0.25) +
+      geom_vline(xintercept=10.5, linetype=2, lwd=0.25) +
+      scale_colour_manual(values=getStockcol()[11:12])
+  
+    print(p)
+}
+```
+
+
+Re-plot the t-SNEs.
+```{r, fig.height=10, fig.width=10, eval=FALSE}
+
+perps <- c(2, 5, 10, 20, 50)
+
+for(condition in names(combined_protein_res_updated_markers)){
+  
+    par(mfrow = c(3, 2))
+    combined_protein_res_updated_markers[[condition]] %>% plot2D(main = paste(condition, ' - ', "PCA"))
+    sapply(perps,
+           function(perp) {
+             combined_protein_res_updated_markers[[condition]] %>% normalise('sum') %>%
+               plot2D(method = "t-SNE", methargs = list(perplexity = perp))
+             title(main = paste(condition, ' - ', "t-SNE, perplexity", perp))
+           })
+}
+```
+
+Re-plot the mean profiles.
+```{r}
+#get order
+.data <- combined_protein_res_updated_markers$Thapsigargin %>%
+    filterNA()
+  
+.data <- .data %>%
+  normalise('sum')
+
+hc <- mrkHClust(.data, plot = FALSE, hclustargs=list(method='single'), fcol='markers_split_ribo')
+
+mm <- getMarkerClasses(.data , fcol='markers_split_ribo')
+ord <- levels(factor(mm))[order.dendrogram(hc)]
+
+  
+for(condition in names(combined_protein_res_updated_markers)){
+  
+  .data <- combined_protein_res_updated_markers[[condition]]  %>% filterNA()
+  
+  #colnames(.data) <- 1:10
+  hc <- mrkHClust(.data, plot = FALSE, fcol='markers_split_ribo')
+  mm <- getMarkerClasses(.data, fcol='markers_split_ribo')
+  
+  fmat <- mrkConsProfiles(.data, fcol='markers_split_ribo')
+  
+  p <- plotConsProfiles(fmat, order = ord, plot=FALSE) +
+    scale_fill_continuous(name='Sum norm.\nintensity',
+                          low = "white", high=get_cat_palette(1),
+                          limits=c(0,0.9),
+                          breaks=seq(0,0.9,0.2)) +
+    scale_x_discrete(labels=pData(.data)$fraction) +
+    ggtitle(condition) +
+    theme_camprot(base_size=15) +
+    geom_vline(xintercept=8.5) +
+    geom_vline(xintercept=16.5) +
+    theme(axis.text.x=element_text(angle=45, hjust=1, vjust=1)) +
+    xlab('')
+
+  print(p)
+}
+
+```
+
+Save out for downstream notebooks
+```{r}
+saveRDS(combined_protein_res_updated_markers, '../../out/combined_protein_res_updated_markers.rds')
+```
+
+
+
+
+
+

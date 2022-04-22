@@ -1,0 +1,54 @@
+---
+title: "Exploring features driving cytosolic localisation of lncRNAs"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we explore the results from the modeling of features contributing to the
+  cytosolic localisation of lncRNAs
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+Read in features (for plotting)
+```{r}
+transcript_features <- readRDS('./out/lncRNA_cyt_proportion_features.rds') %>%
+  dplyr::select(TPM, transcript_length, AU_content, polyadenylation, Cytosol)
+
+transcript_features <- transcript_features %>% filter(is.finite(TPM))
+transcript_features$transcript_length <- log10(transcript_features$transcript_length)
+
+colnames(transcript_features)
+
+transcript_features <- transcript_features %>%
+  mutate(binned_transcript_length=Hmisc::cut2(10^transcript_length, g=4),
+         binned_au=Hmisc::cut2(AU_content, g=4))
+
+```
+
+
+
+```{r}
+
+
+
+
+transcript_features %>%
+  ggplot(aes(colour=binned_transcript_length, Cytosol, x=factor(as.numeric(binned_au)))) +
+  geom_boxplot(size=0.25) +
+  theme_camprot(border=FALSE, base_family='sans', base_size=15) +
+  #xlab('Transcript length (nt)') +
+  #scale_colour_manual(values=get_cat_palette(4), name='AU content\nquartile') +
+  xlab('AU content quartile') +
+  scale_colour_manual(values=get_cat_palette(4), name='Transcript\nlength (nt)') +
+  theme(axis.text.x=element_text(angle=45, vjust=1, hjust=1), strip.background=element_blank()) +
+  facet_wrap(~ifelse(polyadenylation, 'PolyA +', 'PolyA -'))
+
+
+
+
+```

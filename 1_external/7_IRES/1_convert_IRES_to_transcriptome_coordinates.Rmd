@@ -1,0 +1,65 @@
+---
+title: "Extract IRES annotations"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we obtain the IRES annotations from IRES base
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+```{r}
+library(ensembldb)
+library(AnnotationHub)
+```
+
+Get Ensembl annotations
+```{r}
+
+hub = AnnotationHub()
+# output from below line is AH83216. 102 not available
+#query(hub, c("EnsDb", "sapiens", "101"))
+ensdb <- hub[['AH83216']]
+## Change the seqlevels style form Ensembl (default) to UCSC:
+seqlevelsStyle(ensdb) <- "UCSC"
+
+```
+Read in the data table from IRESbase and sanitise the columns
+```{r}
+ires <- read.delim('./human_IRES_info.csv') %>%
+  dplyr::filter(!grepl(';', Location..hg38.)) %>%
+  separate(Location..hg38., into=c('contig', 'coordinates'), sep=':') %>%
+  mutate(strand=str_sub(coordinates, -1, -1), coordinates=str_sub(coordinates, 1, -2)) %>%
+  separate(coordinates, into=c('start', 'end'), sep='-') %>%
+  mutate(start=gsub(',', '', start), end=gsub(',', '', end)) %>%
+  dplyr::filter(!is.na(start), !is.na(end), grepl('chr', contig)) %>% 
+  tibble::rowid_to_column()
+
+ires_gr <- makeGRangesFromDataFrame(ires, seqnames.field='contig', start.field='start', end.field='end', strand.field='strand')
+
+```
+
+Extract exons from Ensembl annotations
+```{r}
+contigs <- as.character(seqlevels(ires_gr)) %>% unlist() %>% unique()
+gene_start <- min(start(ires_gr)) %>% unlist() %>% min()
+gene_end <- max(end(ires_gr)) %>% unlist() %>% max()
+
+exns <- exonsBy(ensdb, by = "tx", filter = AnnotationFilterList(SeqNameFilter(contigs), 
+    GeneStartFilter(gene_end, condition = "<="), 
+    GeneEndFilter(gene_start, condition = ">=")))
+```
+
+Map the coordinates to transcripts and save for use in analysis notebooks
+```{r, time_it = TRUE}
+ires_gr_transcripts <- mapToTranscripts(ires_gr, exns)
+
+ires_gr_transcripts %>% data.frame() %>% merge(ires, by.x='xHits', by.y='rowid') %>%
+  saveRDS('./ires_gr_transcripts.rds')
+```
+```
+

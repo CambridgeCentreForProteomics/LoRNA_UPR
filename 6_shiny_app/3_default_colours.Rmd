@@ -1,0 +1,48 @@
+---
+title: "App colours"
+output: html_notebook
+---
+
+Here, we define the default colours for the protein/RNA figures
+
+```{r}
+library(pRoloc)
+library(camprotR)
+```
+
+
+```{r}
+
+rna_markers <- readRDS('../3_rna/notebooks/1_dlorna/2_lorna/3_proportional_localisation/results/all_datasets_final.rds')$transcript$DMSO$corrected %>%
+  getMarkerClasses()
+  
+rna_colours <- c(get_cat_palette(6)[c(2:3,1,6:4)], "#D9D9D9")
+names(rna_colours) <- c(rna_markers, 'unknown')
+
+```
+
+
+
+```{r}
+protein_markers <- readRDS('../2_protein/notebooks/results/combined_protein_res_finalised_markers.rds')$DMSO %>% getMarkerClasses()
+
+proloc_cols <- pRoloc::getStockcol()
+
+protein_colours <- c(proloc_cols[1], proloc_cols[2], proloc_cols[16], proloc_cols[30],
+                      proloc_cols[5], proloc_cols[12], proloc_cols[19], proloc_cols[8],
+                      proloc_cols[9], proloc_cols[10], proloc_cols[11], "#4D4D4D", "#D9D9D9")
+
+names(protein_colours) <- c(protein_markers, 'unknown')
+
+
+```
+
+
+```{r}
+shiny_colours <- list('RNA'=rna_colours, 'Protein'=protein_colours)
+print(shiny_colours)
+```
+```{r}
+saveRDS(shiny_colours, './out/shiny_colours.rds')
+```
+

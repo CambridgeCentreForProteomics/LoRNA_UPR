@@ -1,0 +1,182 @@
+---
+title: "Parse PSMs"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we parse the PSM-level PD output and QC
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontfamily: mathpazo
+fontsize: 11pt
+---
+
+Load libraries
+```{r setup, message=FALSE}
+
+#### Load packages ####
+library(camprotR)
+library(ggplot2)
+library(tidyverse)
+library(MSnbase)
+library(UniProt.ws)
+```
+
+Read in PSM data
+```{r}
+infile <- Sys.glob('../../../raw/Multiconsensus_dLoRNA_04Feb2021_PSMs.txt.gz')
+print(infile)
+```
+
+Make the cRAP list for filtering
+```{r}
+bs.fasta <- Biostrings::fasta.index('../../../shared_files/cRAP_FullIdentifiers.fasta', seqtype = "AA")
+
+# Extract the UniProt accessions 
+crap.accessions <- bs.fasta %>% 
+  pull(desc) %>% 
+  stringr::str_extract_all("(?<=\\|).*?(?=\\|)") %>% 
+  unlist()
+
+
+
+```
+
+Parse and filter PSMs to remove cRAP proteins
+```{r}
+unfilt_psm <- parse_features(read.delim(infile), TMT=TRUE, level='PSM',
+                             crap_proteins=crap.accessions, unique_master=TRUE)
+
+unfilt_psm <- unfilt_psm %>%
+  group_by(Annotated.Sequence, RT.in.min, First.Scan, File.ID) %>%
+  top_n(-1, wt=Delta.Score) %>%
+  data.frame()
+
+camprotR:::message_parse(unfilt_psm, 'Master.Protein.Accessions', "Remove duplicated PSMs from multiple spectrum matching tools")
+```
+
+Split into replicate experiments, since we will want to perform QC and summarisation to protein-level abundance for each replicate separately
+```{r}
+subsets <- c(paste0('Rep', 1:3), 'Total')
+unfilt_psm_reps <- lapply(subsets, function(rep_id){
+  unfilt_psm %>% filter(grepl(rep_id, Spectrum.File))
+})
+
+names(unfilt_psm_reps) <- subsets
+
+unfilt_psm_reps %>% lapply(dim)
+```
+```{r}
+head(unfilt_psm_reps$Total)
+```
+
+
+Make MSnSets
+```{r}
+
+sample_info <- read.delim('../../../raw/sample_info.tsv') %>% tibble::column_to_rownames('tag')
+sample_info_total <- read.delim('../../../raw/sample_info_total.tsv') %>% tibble::column_to_rownames('tag')
+
+makeMsnset <- function(obj, sinfo){
+  
+  abundance_cols <- colnames(obj)[grepl('Abundance.', colnames(obj))]
+  psm_e <- as.matrix(obj[,abundance_cols])
+  psm_f <- obj[,setdiff(colnames(obj), abundance_cols)]
+    
+  # update the column names to remove the 'Abundance.` prefix
+  colnames(psm_e) <- gsub('Abundance.', '', colnames(psm_e))
+  psm_e <- psm_e[,rownames(sinfo)]
+
+  MSnbase::MSnSet(exprs=psm_e, fData=psm_f, pData=sinfo)
+}
+
+psm_res <- unfilt_psm_reps %>% names() %>% lapply(function(x){
+  print(x)
+  if(x=='Total'){
+    return(makeMsnset(unfilt_psm_reps[[x]], sample_info_total))
+  } else{
+    return(makeMsnset(unfilt_psm_reps[[x]], sample_info))
+  }
+  })
+
+names(psm_res) <- names(unfilt_psm_reps)
+```
+
+Remove features without quantification values
+```{r}
+
+psm_res <- psm_res %>% lapply(function(x){
+  x <- x[rowSums(!is.na(exprs(x)))>0, ]
+  camprotR:::message_parse(fData(x), 'Master.Protein.Accessions', "features without quantification removed")
+  x  
+})
+
+```
+
+Plot quantification distributions
+```{r, fig.width=8, fig.height=5}
+source('../../../R/tag_intensity_density.R')
+
+psm_res %>% names() %>% lapply(function(x){
+  p <- psm_res[[x]] %>% log(base=2) %>%
+    plot_quant() +
+    ylab('PSM intensity (log2)') +
+    theme_camprot() +
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+                hjust = 1)) +
+    ggtitle(x)
+  
+  if(x=='Total'){
+    p <- p + scale_x_discrete(labels=interaction(pData(psm_res[[x]])$condition,
+                                        pData(psm_res[[x]])$replicate, sep=' '))
+  } else{
+    p <- p + 
+      scale_x_discrete(labels=interaction(pData(psm_res[[x]])$condition,
+                                        pData(psm_res[[x]])$fraction, sep=' '))
+    
+    p2 <- psm_res[[x]] %>% log(base=2) %>% plot_quant_density_tg() +
+    xlab("PSM intensity (log2)") + ggtitle(x)
+  
+    print(p2)
+  }
+  
+  print(p)
+  
+  return(NULL)
+})
+
+
+```
+
+Plot missing values
+```{r, fig.height=4, fig.width=6}
+library(RColorBrewer)
+psm_res %>% lapply(function(x){
+  
+    print(table(rowSums(is.na(exprs(x)))))
+
+  p <- x[rowSums(is.na(exprs(x)))>0,] %>% exprs() %>% data.frame() %>% naniar::vis_miss(cluster=TRUE) + theme(axis.text.x=element_text(angle=90))
+  print(p)
+  
+  x %>% log(base=2) %>% naplot(col=brewer.pal(n = 8, name = "YlGnBu")[2:8])
+
+  x %>% plotNA(pNA=0) + xlab('PSM index (ordered by data completeness)') + theme_camprot()
+
+  return(NULL)
+})
+
+```
+OK, so the majority of PSMs have no missing values, but there are a significant proportion in the LOPIT samples.
+
+
+
+Save for downstream notebooks
+```{r}
+saveRDS(psm_res, '../../out/psm_res.rds')
+```
+
+
+

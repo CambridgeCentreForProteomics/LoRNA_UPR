@@ -1,0 +1,372 @@
+---
+title: "Examining differential protein localisation results"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we examine the BANDLE results and identify consistent changes in localisation across the replicates
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+```{r}
+
+library(MSnbase)
+library(pRoloc)
+library(pRolocExt)
+library(camprotR)
+library(tidyverse)
+
+
+source('../plot_foi.R')
+```
+
+Read in the bandle results (pe=posterior estimate) and protein quantification
+```{r}
+combined_pe <- readRDS('../../out/combined_pe.rds')
+combined_protein_res <- readRDS('../../out/combined_protein_res_for_bandle.rds')
+```
+
+Summarise the bandle results across the replicates to describe the localisations identified in each condition
+```{r}
+loc_assignments <- combined_pe %>%
+    group_by(protein) %>%
+    summarise(bandle.allocation.dmso.n=length(setdiff(unique(bandle.allocation.inc.undefined_DMSO), 'Undefined')),
+              bandle.allocation.tg.n=length(setdiff(unique(bandle.allocation.inc.undefined_Tg), 'Undefined')),
+              bandle.allocation.dmso.n.obs=length(
+                bandle.allocation.inc.undefined_DMSO[bandle.allocation.inc.undefined_DMSO!='Undefined']),
+              bandle.allocation.tg.n.obs=length(
+                bandle.allocation.inc.undefined_Tg[bandle.allocation.inc.undefined_Tg!='Undefined']),
+              bandle.allocation.dmso=paste(bandle.allocation.inc.undefined_DMSO, collapse=','),
+              bandle.allocation.tg=paste(bandle.allocation.inc.undefined_Tg, collapse=',')) %>%
+    rowwise() %>%
+    mutate(bandle.allocation.dmso.minimal=ifelse(
+      (bandle.allocation.dmso=='Undefined' | bandle.allocation.dmso.n!=1), 'Undefined',
+      setdiff(unlist(strsplit(bandle.allocation.dmso, split=',')), 'Undefined')),
+      bandle.allocation.tg.minimal=ifelse(
+      (bandle.allocation.tg=='Undefined' | bandle.allocation.tg.n!=1), 'Undefined',
+      setdiff(unlist(strsplit(bandle.allocation.tg, split=',')), 'Undefined')))
+
+
+
+head(loc_assignments)
+
+loc_assignments %>% filter(bandle.allocation.dmso.n==3)
+
+table(loc_assignments$bandle.allocation.dmso.minimal)
+table(loc_assignments$bandle.allocation.tg.minimal)
+
+consistent_loc <- loc_assignments %>% filter(bandle.allocation.dmso.n<=1, bandle.allocation.tg.n<=1)
+
+```
+
+
+Add the bandle localisation assignments to the protein quantification object.
+```{r}
+loc_assignments_per_condition <- NULL
+loc_assignments_per_condition$DMSO <- loc_assignments %>%
+  select(bandle_alloc=bandle.allocation.dmso.minimal, bandle_alloc_all=bandle.allocation.dmso, protein)
+loc_assignments_per_condition$Thapsigargin <- loc_assignments %>%
+  select(bandle_alloc=bandle.allocation.tg.minimal, bandle_alloc_all=bandle.allocation.tg, protein)
+
+combined_protein_res_inc_bandle_loc <- combined_protein_res %>% names() %>% lapply(function(condition){
+  x <- combined_protein_res[[condition]]
+  new_feature_data <- merge(fData(x), loc_assignments_per_condition[[condition]], by.x='row.names', by.y='protein', all.x=TRUE) %>%
+    tibble::column_to_rownames('Row.names')
+  
+  fData(x) <- new_feature_data[rownames(x),]
+  return(x)
+})
+
+names(combined_protein_res_inc_bandle_loc) <- names(combined_protein_res)
+
+table(fData(combined_protein_res_inc_bandle_loc$DMSO)$bandle_alloc)
+table(fData(combined_protein_res_inc_bandle_loc$Thapsigargin)$bandle_alloc)
+```
+
+Define a function to obtain the differential localisations
+```{r}
+get_diff_loc <- function(threshold, name, min_rep=2){
+  
+  combined_pe %>%
+    filter(bandle.differential.localisation>threshold) %>%
+    group_by(protein) %>%
+    summarise(n.diff.loc.rep=length(replicate),
+              diff.loc.reps=paste(replicate, collapse=',')) %>%
+    merge(loc_assignments, by='protein') %>%
+    rowwise() %>%
+    filter(n.diff.loc.rep>=min_rep,
+           length(intersect(setdiff(unlist(strsplit(bandle.allocation.dmso, split=',')), 'Undefined'),
+                            setdiff(unlist(strsplit(bandle.allocation.tg, split=',')), 'Undefined')))==0) %>%
+    mutate(level=name) %>%
+    merge(fData(combined_protein_res$DMSO)[,174:177], by.x='protein', by.y='row.names')
+  
+}
+
+```
+
+Subset the bandle results by 3 threshold on the differential localisation probability and determine the relocalising proteins with each threshold, then combine results into a single data.frame.
+```{r}
+diff_loc_high_conf <- get_diff_loc(0.99, 'Highly confident')
+diff_loc_conf <- get_diff_loc(0.95, 'Confident')
+diff_loc_cand <- get_diff_loc(0.85, 'Candidate')
+
+diff_loc_all <- bind_rows(diff_loc_high_conf, diff_loc_conf, diff_loc_cand) %>%
+  mutate(level=factor(level, levels=c('Highly confident', 'Confident', 'Candidate')))
+
+diff_loc_all_unique <- diff_loc_all %>%
+  group_by(protein) %>%
+  slice_min(order_by=level, n=1) %>%
+  ungroup()
+
+table(diff_loc_all$level)
+table(diff_loc_all$level, diff_loc_all$diff.loc.reps)
+
+table(diff_loc_all_unique$level)
+table(diff_loc_all_unique$level, diff_loc_all_unique$diff.loc.reps)
+```
+
+
+Save for downstream notebooks
+```{r}
+saveRDS(loc_assignments, '../../out/bandle_loc_assignments.rds')
+saveRDS(diff_loc_all, '../../out/bandle_diff_loc_all.rds')
+saveRDS(diff_loc_all_unique, '../../out/bandle_diff_loc_all_unique.rds')
+saveRDS(combined_protein_res_inc_bandle_loc, '../../out/combined_protein_res_inc_bandle_loc.rds')
+
+```
+
+Define a function to plot the differential localisation as a tile plot
+```{r}
+
+
+
+
+
+plot_diff_loc_tile <- function(obj){
+  obj %>%
+    group_by(DMSO=update_loc_names(bandle.allocation.dmso.minimal),
+             Tg=update_loc_names(bandle.allocation.tg.minimal)) %>%
+    tally() %>%
+    ggplot(aes(DMSO, Tg, fill=n)) +
+    geom_tile() +
+    theme_camprot(base_size=15, base_family='sans') +
+    theme(axis.text.x=element_text(angle=45, vjust=1, hjust=1)) +
+    scale_fill_continuous(low='grey90', high=get_cat_palette(6)[6], guide=FALSE) +
+    xlab('DMSO') +
+    ylab('Tg') +
+    geom_text(aes(label=n))
+}
+
+```
+
+Plot localisations for all localisation assignments and for each level of confidence of relocalisation
+```{r}
+plot_diff_loc_tile(loc_assignments)
+diff_loc_all_unique %>% filter(level=='Highly confident') %>% plot_diff_loc_tile()
+
+p <- diff_loc_all_unique %>% filter(level %in% c('Highly confident', 'Confident')) %>% plot_diff_loc_tile()
+print(p)
+ggsave('../../../../5_manuscript_figures/Figure_4/reloc/tile.png', width=4, height=4)
+ggsave('../../../../5_manuscript_figures/Figure_4/reloc/tile.pdf', width=4, height=4)
+diff_loc_all_unique %>% plot_diff_loc_tile()
+```
+
+Aluvial plots for relocalisation
+
+```{r}
+library(ggalluvial)
+
+colours <- readRDS('../../../../6_shiny_app/out/shiny_colours.rds')$Protein
+
+colours <- c(colours[getMarkerClasses(combined_protein_res$DMSO)], 'grey85') %>% unname()
+marker_levels=update_loc_names(c(getMarkerClasses(combined_protein_res$DMSO), 'Undefined'))
+
+
+plot_alluvial <- function(obj, remove_same=TRUE){
+  for_alluvial <- obj %>%
+    mutate(DMSO=update_loc_names(bandle.allocation.dmso.minimal),
+           Tg=update_loc_names(bandle.allocation.tg.minimal)) %>%
+    dplyr::select(DMSO, Tg)
+  
+  if(remove_same){
+    for_alluvial <- for_alluvial %>%
+    filter(DMSO!=Tg)
+  }
+  
+  for_alluvial <- for_alluvial %>%
+    to_lodes() %>%
+    mutate(stratum=factor(stratum, levels=marker_levels))
+  
+  
+  for_alluvial %>%
+    ggplot(aes(x, stratum=stratum, alluvium=alluvium, fill=stratum, label = stratum)) +
+    geom_alluvium(width=1/8) +
+    geom_stratum(width=1/8) +
+    theme_camprot(base_size=15, base_family='sans') +
+    theme(aspect.ratio=1.5, 
+          axis.text.y=element_blank(), 
+          axis.ticks=element_blank(),
+          axis.title=element_blank(),
+          axis.line=element_blank(),
+          panel.border=element_blank()) +
+    #geom_text(stat = "stratum", size = 3, data=x[x$x=='DMSO',], hjust=1) +
+    #geom_text_repel(stat = "stratum", size = 3, data=x[x$x=='DMSO',], min.segment.length=3, hjust=1) +
+    scale_fill_manual(values=colours[marker_levels %in% unique(for_alluvial$stratum)], name='')
+  
+}
+
+plot_alluvial(loc_assignments, remove_same=FALSE)
+diff_loc_all_unique %>% filter(level=='Highly confident') %>% plot_alluvial()
+
+p <- diff_loc_all_unique %>% filter(level %in% c('Highly confident', 'Confident')) %>% plot_alluvial()
+print(p)
+ggsave('../../../../5_manuscript_figures/Figure_4/reloc/alluvial.png', width=5, height=5)
+ggsave('../../../../5_manuscript_figures/Figure_4/reloc/alluvial.pdf', width=5, height=5)
+
+diff_loc_all_unique %>% plot_alluvial()
+
+```
+
+
+
+In the next few cells, we plot specific subsets of protein relocalisations to help with the interpretation.
+```{r}
+Ribo2Un <- diff_loc_all_unique %>%
+  filter(bandle.allocation.dmso.minimal=='RIBOSOME', bandle.allocation.tg.minimal=='Undefined', level!='Candidate')
+
+print(Ribo2Un)
+
+plot_fois(Ribo2Un$protein,
+          foi_name='Ribosome -> Undefined',
+          moi=c('RIBOSOME', 'ER', 'PROTEIN COMPLEX', 'CYTOSOL'),
+          obj=combined_protein_res_inc_bandle_loc,
+          feature_col='bandle_alloc',
+          plot_tsne=TRUE,
+          unknown_desc='Undefined')
+
+for(x in Ribo2Un$protein){
+  plot_fois(x,
+          foi_name=x,
+          moi=c('RIBOSOME', 'ER', 'PROTEIN COMPLEX', 'NUCLEUS'),
+          obj=combined_protein_res_inc_bandle_loc,
+          feature_col='bandle_alloc',
+          unknown_desc='Undefined')
+}
+```
+
+
+```{r}
+
+Ribo2Any <- diff_loc_all_unique %>%
+  filter(bandle.allocation.dmso.minimal=='RIBOSOME')
+
+print(Ribo2Any %>% arrange(level))
+
+plot_fois(Ribo2Any$protein,
+          foi_name='Away from ribosome',
+          moi=c('RIBOSOME', 'ER', 'PROTEIN COMPLEX', 'CYTOSOL'),
+          obj=combined_protein_res_inc_bandle_loc,
+          feature_col='bandle_alloc',
+          plot_tsne=TRUE,
+          unknown_desc='Undefined')
+```
+
+```{r, eval=FALSE}
+for(x in Ribo2Any$protein){
+  plot_fois(x,
+          foi_name=x,
+          moi=c('RIBOSOME', 'ER', 'PROTEIN COMPLEX', 'NUCLEUS'),
+          obj=combined_protein_res,
+          feature_col='markers')
+}
+```
+
+
+
+```{r}
+PM2ER <- diff_loc_all_unique %>%
+  filter(bandle.allocation.dmso.minimal=='PM',
+         bandle.allocation.tg.minimal=='ER')
+
+print(PM2ER)
+
+plot_fois(PM2ER$protein,
+          foi_name='PM->ER',
+          moi=c('PM', 'ER', 'LYSOSOME', 'MITOCHONDRIA', 'PEROXISOME'),
+          obj=combined_protein_res_inc_bandle_loc,
+          feature_col='bandle_alloc',
+          plot_tsne=TRUE,
+          unknown_desc='Undefined')
+
+
+```
+
+```{r}
+Any2Nuc <- diff_loc_all_unique %>%
+  filter(grepl('NUC', bandle.allocation.tg.minimal))
+
+print(Any2Nuc %>% arrange(level))
+
+
+plot_fois(Any2Nuc$protein, foi_name='To Nucleoplasm',
+          moi=c('CYTOSOL', 'NUCLEUS', 'NUCLEOPLASM-1', 'NUCLEOPLASM-2', 'ER'),
+          obj=combined_protein_res,
+          feature_col='markers')
+
+for(x in Any2Nuc$protein){
+  plot_fois(x, foi_name=x,
+          moi=c('CYTOSOL', 'NUCLEUS', 'NUCLEOPLASM-1', 'NUCLEOPLASM-2', 'ER'),
+          obj=combined_protein_res,
+          feature_col='markers')
+}
+
+```
+
+```{r}
+ga2any <- diff_loc_conf %>%
+  filter(bandle.allocation.dmso.minimal=='GOLGI')
+
+print(ga2any %>% arrange(level))
+
+plot_fois(ga2any$protein,
+          foi_name='Away from golgi',
+          moi=c('GOLGI', 'ER', 'LYSOSOME', 'CYTOSOL', 'NUCLEUS'),
+          obj=combined_protein_res,
+          feature_col='markers',
+          plot_tsne=TRUE)
+```
+```{r}
+plot_fois('Q92688',
+          foi_name='Q92688',
+          moi=c('GOLGI', 'ER', 'LYSOSOME', 'CYTOSOL', 'NUCLEUS'),
+          obj=combined_protein_res_inc_bandle_loc,
+          feature_col='bandle_alloc',
+          plot_tsne=TRUE,
+          unknown_desc='Undefined')
+
+
+```
+
+```{r}
+un2un <- diff_loc_all_unique %>%
+  filter(bandle.allocation.dmso.minimal=='Undefined',
+         bandle.allocation.tg.minimal=='Undefined',
+         diff.loc.reps=='1,2,3')
+
+print(un2un)
+
+plot_fois(un2un$protein,
+          foi_name='?->?',
+          moi=c('GOLGI', 'ER', 'LYSOSOME', 'CYTOSOL', 'NUCLEUS'),
+          obj=combined_protein_res,
+          feature_col='markers',
+          plot_tsne=TRUE)
+```
+
+
+

@@ -1,0 +1,80 @@
+---
+title: "Compare granule relocalisation with Child et al"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we compare the granile relocalsiation with Child et al
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+```{r}
+library(tidyverse)
+library(camprotR)
+library(broom)
+```
+
+```{r}
+proportions_per_rep <- readRDS('../../../3_rna/notebooks/1_dlorna/2_lorna/4_proportional_localisation/results/proportions_per_rep.rds')
+proportions <- readRDS('../../../3_rna/notebooks/1_dlorna/2_lorna/4_proportional_localisation/results/proportions.rds')
+```
+
+
+Child et al: https://rnajournal.cshlp.org/content/early/2021/07/08/rna.078858.121.abstract
+```{r}
+child_et_al_goi <- list('B2M'='ENSG00000166710', 'HSPA5'='ENSG00000044574',
+                        'CTGF'='ENSG00000118523', 'HSP90B1'='ENSG00000166598',
+                        'NCL'='ENSG00000115053', 'GAPDH'='ENSG00000111640')
+child_et_al_goi_swapped <- names(child_et_al_goi)
+names(child_et_al_goi_swapped) <- child_et_al_goi
+child_et_al_sg_up <- c('HSP90B1', 'CTGF', 'NCL')
+
+
+
+p <- proportions$gene %>%
+  mutate(condition=recode(condition, 'Tg'='UPR', 'DMSO'='Control')) %>%
+  filter(id %in% child_et_al_goi) %>%
+  dplyr::select(id, condition, Granule, sd_Granule) %>%
+  rowwise() %>%
+  mutate(gene_name=child_et_al_goi_swapped[[id]]) %>%
+  mutate(direction=ifelse(gene_name %in% child_et_al_sg_up, 'Accumulated', 'Not accumulated')) %>%
+  mutate(se_Granule=sd_Granule/sqrt(3)) %>%
+  ggplot(aes(gene_name, Granule, fill=condition)) +
+  geom_bar(stat='identity', position='dodge') +
+  geom_errorbar(aes(ymin=Granule-se_Granule, ymax=Granule+se_Granule),
+                position=position_dodge(width=1), width=0.3) +
+  theme_camprot(border=FALSE, base_size=15, base_family='sans') +
+  scale_fill_manual(values=get_cat_palette(2), name='') +
+  facet_wrap(~direction, nrow=1, scales='free_x') +
+  ylim(NA,0.6) +
+  theme(strip.background=element_blank()) +
+  xlab('') +
+  ylab('LORITO granule proportion') +
+  ggtitle('Child et al perinuclear stress granules in UPR') +
+  theme(plot.title=element_text(hjust=0.5))
+
+print(p)
+ggsave('./child_et_al_agreement.png', height=3.5, width=7)
+ggsave('./child_et_al_agreement.pdf', height=3.5, width=7)
+```
+
+
+```{r}
+
+proportions_per_rep$gene %>%
+  filter(id %in% child_et_al_goi) %>%
+  rowwise() %>%
+  mutate(gene_name=child_et_al_goi_swapped[[id]]) %>%
+  dplyr::select(gene_name, replicate, condition, Granule) %>%
+  group_by(gene_name) %>%
+  do(tidy(t.test(Granule~condition, data=.))) %>%
+  ungroup() %>%
+  mutate(adj_p_value=p.adjust(p.value, method='BH'))
+```
+
+

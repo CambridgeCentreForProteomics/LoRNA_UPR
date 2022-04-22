@@ -1,0 +1,276 @@
+---
+title: "lncRNA cytosol proportions features"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we extract and prepare the features for building a model to understand
+  lncRNA cytosolic proportion
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+```{r}
+library(tidyverse)
+library(camprotR)
+library(biomaRt)
+library(MSnbase)
+```
+
+Read in the dLoRNA cytosol proportions
+```{r}
+dlorna_cyt_proportions <- readRDS('../../1_dlorna/2_lorna/3_proportional_localisation/results/proportions.rds')$transcript %>%
+  filter(condition=='DMSO') %>%
+  dplyr::select('ensembl_transcript_id'=id,  Cytosol)
+```
+
+
+For the lncRNA cytosolic proportion we will use the dLoRNA transcript level proportions. Note that we could use the combined d + sLoRNA. However, s is only at gene-level and we would like to use transcripts for many of the features.
+
+
+The features we will use are:
+
+1. Transcript length
+2. Spliced (e.g not monoexonic)
+3. eCLIP binding data
+4. kmers (1-7mer)
+5. RNA modifications
+6. PolyA
+7. Abundance
+
+
+Before we do the modeling though. A quick demonstration that lncRNAs with more evidence of cytosolic localisation are more likely to have a cryptic ORF
+```{r}
+ribosome_profiling_lncRNA <- readRDS('../../../../1_external/2_ribosome_profiling/out/zeng_2018_lincRNA_ribosome_profiling.rds')
+
+p <- dlorna_cyt_proportions %>%
+  merge(ribosome_profiling_lncRNA, by='ensembl_transcript_id') %>%
+  ggplot(aes(U2OS, Cytosol)) +
+  geom_boxplot(notch=TRUE) +
+  theme_camprot(border=FALSE, base_size=15, base_family='sans')
+
+print(p)
+ggsave('../../../../5_manuscript_figures/Figure_3/lncRNA_model/orfs.png', width=3.5, height=3.5)
+ggsave('../../../../5_manuscript_figures/Figure_3/lncRNA_model/orfs.pdf', width=3.5, height=3.5)
+```
+
+Get map of tx to gene for lncRNAs
+```{r}
+ensembl <- useEnsembl(biomart="ensembl", version=102, dataset="hsapiens_gene_ensembl")
+lncRNAtx2gene <- getBM(attributes=c('ensembl_transcript_id',
+                              'ensembl_gene_id',
+                              'gene_biotype'),
+                      mart = ensembl,
+                      filters = 'ensembl_transcript_id',
+                      values=dlorna_cyt_proportions$ensembl_transcript_id) %>%
+  filter(gene_biotype=='lncRNA')
+
+print(nrow(lncRNAtx2gene))
+```
+
+```{r}
+lncRNA_dlorna_cyt_proportions <- dlorna_cyt_proportions %>% merge(lncRNAtx2gene, by='ensembl_transcript_id')
+hist(lncRNA_dlorna_cyt_proportions$Cytosol)
+```
+
+
+
+
+1. Transcript length
+```{r}
+tx_length <- getBM(attributes=c('ensembl_transcript_id',
+                                'transcript_length'),
+                   mart = ensembl,
+                   filters = 'ensembl_transcript_id',
+                   values=lncRNA_dlorna_cyt_proportions$ensembl_transcript_id)
+
+head(tx_length)
+```
+2. Spliced (e.g not monoexonic)
+```{r}
+listAttributes(ensembl) %>% filter(grepl('exon', name))
+
+tx_spliced <- getBM(attributes=c('ensembl_transcript_id',
+                                'ensembl_exon_id'),
+                   mart = ensembl,
+                   filters = 'ensembl_transcript_id',
+                   values=lncRNA_dlorna_cyt_proportions$ensembl_transcript_id) %>%
+  group_by(ensembl_transcript_id) %>%
+  tally() %>%
+  mutate('spliced'=n>1) %>%
+  tibble::remove_rownames() %>%
+  tibble::column_to_rownames('ensembl_transcript_id') %>%
+  dplyr::select(-n)
+  
+head(tx_spliced)
+```
+3. eCLIP binding data. Exclude proteins binding fewer than 10 lncRNAs.+
+
+
+
+
+
+
+
+
+```{r}
+
+eCLIP_wide <- readRDS('../../../../1_external/1_ENCORE_eCLIP/out/eCLIP_wide.rds')$transcript
+dim(eCLIP_wide)
+eCLIP_wide <- eCLIP_wide[intersect(rownames(eCLIP_wide), lncRNA_dlorna_cyt_proportions$ensembl_transcript_id),]
+dim(eCLIP_wide)
+table(colSums(eCLIP_wide))
+table(colSums(eCLIP_wide)>10)
+
+eCLIP_wide_finalised <- eCLIP_wide[,colSums(eCLIP_wide)>10]
+dim(eCLIP_wide_finalised)
+```
+
+
+4. kmers (1-?)
+```{r}
+tx_seq <- getBM(attributes=c('cdna', 'ensembl_transcript_id'), mart=ensembl,
+                filters='ensembl_transcript_id',
+                values=unique(lncRNA_dlorna_cyt_proportions$ensembl_transcript_id))
+
+```
+
+
+
+```{r}
+min_k <- 1
+max_k <- 7
+
+
+tx_seq_with_seq <- tx_seq[tx_seq[,1]!="Sequence unavailable",]
+dim(tx_seq)
+dim(tx_seq_with_seq)
+
+tx_rnaseq <- tx_seq_with_seq[,1] %>%
+  gsub(pattern='T', replacement='U') %>%
+  Biostrings::RNAStringSet()
+
+kmers <- lapply(seq(min_k, max_k), function(k){
+  # as.prob=TRUE so this is frequency rather than count
+  Biostrings::oligonucleotideFrequency(tx_rnaseq, width=k, as.prob=TRUE) %>%
+    data.frame()
+})
+
+kmers <- bind_cols(kmers)
+kmers$AU_content <- kmers$A+kmers$U
+rownames(kmers) <- tx_seq_with_seq$ensembl_transcript_id
+dim(kmers)
+
+
+gc()
+kmers <- scale(kmers)
+gc()
+```
+
+
+
+5. m6A (and other modifications)
+```{r}
+combined_mod_wide <- readRDS('../../../../1_external/16_RNA_mods/m6A_atlas//combined_mod_wide.rds')
+
+combined_mod_wide  
+```
+
+```{r}
+to_plot <- lncRNA_dlorna_cyt_proportions %>%
+  merge(combined_mod_wide, by='ensembl_gene_id', all.x=TRUE)
+
+to_plot[,colnames(combined_mod_wide)][is.na(to_plot[,colnames(combined_mod_wide)])] <- 0
+to_plot[,colnames(combined_mod_wide)][to_plot[,colnames(combined_mod_wide)]>1] <- 1
+
+
+
+for(mod in setdiff(colnames(combined_mod_wide), 'ensembl_gene_id')){
+  p <- to_plot %>%
+    ggplot(aes(Cytosol, colour=!!sym(mod)==1)) +
+    geom_density() +
+    theme_camprot() +
+    scale_colour_manual(values=get_cat_palette(2), name=mod)
+  print(p)
+}
+
+dim(to_plot)
+colSums(to_plot[,setdiff(colnames(combined_mod_wide), 'ensembl_gene_id')])
+
+finalised_mods <- combined_mod_wide %>% filter(ensembl_gene_id %in% lncRNA_dlorna_cyt_proportions$ensembl_gene_id) %>%
+  tibble::column_to_rownames('ensembl_gene_id')
+finalised_mods[finalised_mods>1] <- 1
+print(colSums(finalised_mods))
+finalised_mods <- finalised_mods[,colSums(finalised_mods)>10]
+```
+
+6. polyA
+```{r}
+polyA <- readRDS('../../../../1_external/15_lncRNA/Lorenzi_et_al/Lorenzi_S3_annot.rds') %>%
+  dplyr::select(ensembl_gene_id, polyadenylation, in_FANTOM5_robust)
+```
+
+7. Abundance
+```{r}
+total_tx <- readRDS('../../1_dlorna/2_lorna/1_data_processing/out/transcript_quant_total_res.rds')
+total_tx <- total_tx[,pData(total_tx)$condition=='DMSO']
+mean_tpm <- total_tx[intersect(rownames(total_tx), lncRNA_dlorna_cyt_proportions$ensembl_transcript_id),] %>%
+  exprs() %>%
+  rowMeans() %>%
+  log10() %>%
+  data.frame() %>%
+  setNames('TPM')
+
+head(mean_tpm)
+```
+Now, let's combine all the features
+```{r}
+
+lncRNA_cyt_proportion_features <- lncRNA_dlorna_cyt_proportions %>%
+  merge(mean_tpm, by='ensembl_transcript_id', by.y='row.names') %>%
+  merge(tx_length, by='ensembl_transcript_id') %>%
+  merge(tx_spliced, by='ensembl_transcript_id', by.y='row.names') %>%
+  merge(kmers, by='ensembl_transcript_id', by.y='row.names') %>%
+  merge(finalised_mods,  by.x='ensembl_gene_id', by.y='row.names', all.x=TRUE) %>%
+  merge(polyA,  by='ensembl_gene_id', all.x=TRUE) %>%
+  merge(eCLIP_wide_finalised, by='ensembl_transcript_id', by.y='row.names', all.x=TRUE)
+
+
+```
+
+
+
+```{r}
+# make polyA annotation binary
+lncRNA_cyt_proportion_features$polyadenylation[is.na(lncRNA_cyt_proportion_features$polyadenylation)] <- 'non-polyadenylated'
+lncRNA_cyt_proportion_features$polyadenylation[lncRNA_cyt_proportion_features$polyadenylation=='bimorphic'] <- 'polyadenylated'
+lncRNA_cyt_proportion_features$polyadenylation[lncRNA_cyt_proportion_features$polyadenylation=='undetermined'] <- 'non-polyadenylated'
+lncRNA_cyt_proportion_features$polyadenylation <- lncRNA_cyt_proportion_features$polyadenylation=='polyadenylated'
+
+
+# make FANTOM annotation binary
+lncRNA_cyt_proportion_features$in_FANTOM5_robust <- as.logical(lncRNA_cyt_proportion_features$in_FANTOM5_robust)
+lncRNA_cyt_proportion_features$in_FANTOM5_robust[is.na(lncRNA_cyt_proportion_features$in_FANTOM5_robust)] <- FALSE
+
+
+# make eCLIP annotation binary
+lncRNA_cyt_proportion_features[,colnames(eCLIP_wide_finalised)][is.na(lncRNA_cyt_proportion_features[,colnames(eCLIP_wide_finalised)])] <- 0
+lncRNA_cyt_proportion_features[,colnames(finalised_mods)][is.na(lncRNA_cyt_proportion_features[,colnames(finalised_mods)])] <- 0
+
+nas <- colSums(is.na(lncRNA_cyt_proportion_features))
+
+# no columns left with NAs 
+nas[nas>1]
+
+dim(lncRNA_cyt_proportion_features)
+```
+
+```{r}
+saveRDS(lncRNA_cyt_proportion_features, './out/lncRNA_cyt_proportion_features.rds')
+```
+
+

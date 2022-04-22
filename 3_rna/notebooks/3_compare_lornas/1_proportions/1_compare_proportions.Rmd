@@ -1,0 +1,364 @@
+---
+title: "Comapre LoRNA proportions"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we compare the proportions from the two LoRNAs
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+```{r}
+
+library(camprotR)
+library(pRoloc)
+library(pRolocdata)
+library(pRolocExt)
+library(ggbeeswarm)
+library(tidyverse)
+```
+
+```{r}
+colours <- readRDS('../../../../6_shiny_app/out/shiny_colours.rds')$RNA[1:6]
+```
+
+Read in proportions from sedimentation and density-based LoRNAs.
+```{r}
+s_proportions_per_rep <- readRDS(
+  '../../2_slorna/4_proportional_localisation/results/proportions_per_rep.rds') %>%
+      select(markers, id, replicate, mean_var_explained,
+             Membrane, Cytosol, Nucleus, Mitochondrion)
+
+d_proportions_per_rep <- readRDS(
+  '../../1_dlorna/2_lorna/3_proportional_localisation/results/proportions_per_rep.rds') %>%
+  lapply(function(x){
+    x %>% 
+      select(markers, id, replicate, condition, mean_var_explained,
+             Membrane, Cytosol, Granule, Nucleus, Nucleolus)
+  })
+
+
+```
+
+Functions to plot correlations between LoRNAs.
+```{r}
+
+
+get_cor_long <- function(x, cor_method='pearson'){
+  x <- cor(x, use='complete.obs', method=cor_method) %>%
+    as.data.frame.matrix() %>% 
+    tibble::rownames_to_column('rep2') %>%
+    pivot_longer(cols=-rep2, names_to='rep1', values_to='cor')
+}
+
+
+plot_cor <- function(cor_method='pearson', plot=TRUE){
+
+  if(cor_method=='pearson'){
+    ylabel <- 'Pearson correlation'
+  } else if(cor_method=='spearman'){
+    ylabel <- 'Spearman rho'
+  } else if(cor_method=='kendall'){
+    ylabel <- 'Kendall Tau'
+  } else{
+    stop('cor method must be pearson, spearman or kendall')
+  }
+  
+  d_cor <- d_proportions_per_rep %>%
+  lapply(function(x){
+    x %>%
+      mutate(Nucleus=Nucleus+Nucleolus) %>%
+      select(-c(mean_var_explained, Nucleolus)) %>%
+      pivot_longer(cols=-c(markers, id, replicate, condition)) %>%
+      pivot_wider(names_from=replicate, values_from=value) %>% 
+      filter(name != 'mean_var_explained') %>%
+      select(-c(markers, id, condition)) %>%
+      group_by(name) %>%
+      group_modify(~get_cor_long(., cor_method)) %>%
+      filter(rep1!=rep2) %>%
+      mutate(lorna='dLoRNA')
+  })
+    
+  s_cor <- s_proportions_per_rep %>%
+    select(-mean_var_explained) %>%
+    pivot_longer(cols=-c(markers, id, replicate)) %>%
+    pivot_wider(names_from=replicate, values_from=value) %>% 
+    filter(name != 'mean_var_explained') %>%
+    select(-c(markers, id)) %>%
+    group_by(name) %>%
+    group_modify(~get_cor_long(., cor_method)) %>%
+    filter(rep1!=rep2) %>%
+    mutate(lorna='sLoRNA')
+    
+  
+  p <- bind_rows(d_cor$gene, s_cor) %>%
+    filter(rep2>rep1) %>% #, rep1!=1) %>%
+    filter(name!='Mem') %>%
+    ggplot(aes(name, cor)) +
+    geom_quasirandom() +
+    stat_summary(fun=mean, fun.max=mean, fun.min=mean, geom='errorbar',
+                 width=0.5, position=position_dodge(), colour=get_cat_palette(1)) +
+    theme_camprot(border=FALSE) +
+    ylim(0, 1) +
+    xlab('Localisation') +
+    ylab(ylabel) +
+    theme(axis.text.x=element_text(angle=45, vjust=1, hjust=1), strip.background=element_blank()) +
+    facet_wrap(~lorna, scales='free_x')
+    
+  if(plot){
+    print(p)
+  }
+  
+  invisible(list('p'=p, 'd_cor'=d_cor, 's_cor'=s_cor))
+}
+
+
+p_cor <- plot_cor()
+
+```
+
+```{r}
+plot_cor('spearman')
+```
+
+
+```{r}
+dlorna_proportions_dmso <- readRDS('../../1_dlorna/2_lorna/4_proportional_localisation/results/proportions.rds')$gene %>%
+  filter(condition=='DMSO') %>%
+  mutate(Nuc=Nucleus+Nucleolus)
+
+dlorna_proportions_dmso
+
+
+```
+
+```{r}
+all_datasets_s <- readRDS('../../2_slorna/2_data_processing/out/all_datasets.rds')
+
+```
+
+Function to plot dLoRNA proportions on top of another LoRNA PCA profiles.
+```{r}
+
+plot_d_proportions <- function(obj, dlorna_proportions){
+  
+  proj <- make_proj(obj, fcol='markers_inc_granules')
+  pc_cols_names <- colnames(proj)[1:2]
+  colnames(proj)[1:2]  <- c('PC1','PC2')
+
+  p <- proj %>%
+    mutate(markers=recode(markers, 'Granule'='Cytosol-Light')) %>%
+    arrange(markers!='unknown') %>%
+    ggplot() +
+    aes(PC1, PC2, alpha=markers=='unknown') +
+    theme_camprot(base_family='sans', border=FALSE, base_size=15) +
+    scale_alpha_manual(values=c(1, 0.5), guide=FALSE) +
+    xlab(pc_cols_names[1]) +
+    ylab(pc_cols_names[2])
+  
+  p_markers <- p + aes(colour=markers, size=markers=='unknown') +
+          geom_point() +
+          scale_colour_manual(values=c(colours[1:5], 'grey90'), name='') +
+          scale_size_manual(values=c(1, 0.5), guide=FALSE)
+  
+  print(p_markers)
+  
+  proj_with_prop <- proj %>% merge(dlorna_proportions, by.x='row.names', by.y='id')
+  
+  muted_low <- scales::muted(get_cat_palette(2)[2], l=90, c=100)
+  p_cyt_prop <- p + geom_point(data=(proj_with_prop %>% arrange(Cytosol)),
+                               aes(colour=Cytosol), alpha=1, size=.5)  +
+    scale_colour_gradient2(low=muted_low, mid='grey90', high=get_cat_palette(1), midpoint=.5, limits=c(0,1)) +
+    guides(colour = guide_colourbar(ticks = FALSE))
+  
+  p_mem_prop <- p + geom_point(data=(proj_with_prop %>% arrange(Membrane)),
+                               aes(colour=Membrane), alpha=1, size=.5)  +
+    scale_colour_gradient2(low=muted_low, mid='grey90', high=get_cat_palette(1), midpoint=.5, limits=c(0,1)) +
+    guides(colour = guide_colourbar(ticks = FALSE))
+
+  p_nuc_prop <- p + geom_point(data=(proj_with_prop %>% arrange(Nuc)),
+                               aes(colour=Nuc), alpha=1, size=.5)  +
+    scale_colour_gradient2(low=muted_low, mid='grey90', high=get_cat_palette(1), midpoint=.5, limits=c(0,1), name='Nucleus') +
+    guides(colour = guide_colourbar(ticks = FALSE))
+
+  p_cyt_l_prop <- p + geom_point(data=(proj_with_prop %>% arrange(Granule)),
+                               aes(colour=Granule), alpha=1, size=.5)  +
+    scale_colour_gradient2(low=muted_low, mid='grey90', high=get_cat_palette(1), midpoint=.5, limits=c(0,1)) +
+    guides(colour = guide_colourbar(ticks = FALSE))
+
+  print(p_cyt_prop)
+  print(p_mem_prop)
+  print(p_nuc_prop)
+  print(p_cyt_l_prop)
+
+  loc_to_colours = colours[1:5]
+  names(loc_to_colours) <- gsub('-', '.', getMarkerClasses(obj, 'markers_inc_granules')) 
+  loc_to_colours <- loc_to_colours[names(loc_to_colours)!='Mitochondrion']
+  
+  fun_color_range <- lapply(names(loc_to_colours), function(loc){
+      x <- colorRampPalette(c(loc_to_colours[loc], "grey95", "grey95"))
+      x(110)})
+    
+  names(fun_color_range) <- names(loc_to_colours)
+  
+  proportions <- dlorna_proportions[,!grepl('sd', colnames(dlorna_proportions))] %>%
+    mutate(Nucleus=Nuc, Cytosol=Cytosol+Granule) %>%
+    dplyr::select(-Nuc, -Nucleolus, -Granule) %>%
+    tibble::column_to_rownames('id') %>%
+    dplyr::select(-condition) %>%
+    mutate(max=rowMax(as.matrix(.)),
+               max_loc=colnames(.)[apply(.,1,which.max)])
+
+  lm_results_for_pca <- proj %>% merge(proportions, by='row.names')
+  
+  lm_results_for_pca <- lm_results_for_pca %>% rowwise() %>% mutate(colour=fun_color_range[[max_loc]][(1+(100*(1-max)))]) %>%
+    arrange(max)
+  
+  p_proportions <- p +
+    aes(colour=colour) +
+    geom_point(data=lm_results_for_pca, stroke=0, size=2) +
+    scale_colour_identity()
+  
+  print(p_proportions)
+  
+  invisible(list('p_markers'=p_markers, 'p_proportions'=p_proportions,
+                 'p_cyt_prop'=p_cyt_prop, 'p_mem_prop'=p_mem_prop,
+                 'p_nuc_prop'=p_nuc_prop, 'p_cyt_l_prop'=p_cyt_l_prop))
+}
+
+
+plots <- plot_d_proportions(all_datasets_s$gene$uncorrected, dlorna_proportions_dmso)
+
+ggsave('../../../../5_manuscript_figures/Figure_2/dc_profiles/pca_markers.png', plot=plots$p_markers, height=3.5)
+ggsave('../../../../5_manuscript_figures/Figure_2/dc_profiles/pca_markers.pdf', plot=plots$p_markers, height=3.5)
+
+ggsave('../../../../5_manuscript_figures/Figure_2/prop_proj/pca_cyt_prop_proj.png', plot=plots$p_cyt_prop, height=3.5, width=4)
+ggsave('../../../../5_manuscript_figures/Figure_2/prop_proj/pca_cyt_prop_proj.pdf', plot=plots$p_cyt_prop, height=3.5, width=4)
+
+ggsave('../../../../5_manuscript_figures/Figure_2/prop_proj/pca_mem_prop_proj.png', plot=plots$p_mem_prop, height=3.5, width=4)
+ggsave('../../../../5_manuscript_figures/Figure_2/prop_proj/pca_mem_prop_proj.pdf', plot=plots$p_mem_prop, height=3.5, width=4)
+
+ggsave('../../../../5_manuscript_figures/Figure_2/prop_proj/pca_nuc_prop_proj.png', plot=plots$p_nuc_prop, height=3.5, width=4)
+ggsave('../../../../5_manuscript_figures/Figure_2/prop_proj/pca_nuc_prop_proj.pdf', plot=plots$p_nuc_prop, height=3.5, width=4)
+
+ggsave('../../../../5_manuscript_figures/Figure_2/prop_proj/pca_prop_proj.png', plot=plots$p_proportions, height=3.5, width=4)
+ggsave('../../../../5_manuscript_figures/Figure_2/prop_proj/pca_prop_proj.pdf', plot=plots$p_proportions, height=3.5, width=4)
+```
+
+
+Compare average proportions across replicates for each LoRNA. Start by reading in each set of proportions.
+```{r}
+slorna_proportions <- readRDS(
+  '../../2_slorna/4_proportional_localisation/results/proportions.rds')
+
+dlorna_proportions <- readRDS(
+  '../../1_dlorna/2_lorna/4_proportional_localisation/results/proportions.rds')$gene %>%
+  filter(condition=='DMSO')
+```
+
+```{r}
+both_proportions <- slorna_proportions %>% merge(dlorna_proportions, by='id')
+```
+
+
+
+```{r}
+
+ensembl <- biomaRt::useEnsembl('ensembl', version=102, dataset='hsapiens_gene_ensembl')
+
+gene2biotype <- biomaRt::getBM(attributes=c('ensembl_gene_id', 'gene_biotype'), mart=ensembl,
+                               filters = 'ensembl_gene_id', values=both_proportions$id)
+
+both_proportions <- merge(both_proportions, gene2biotype, by.x='id', by.y='ensembl_gene_id')
+```
+
+
+Tallying the agreement for majority cytosol between the two methods
+```{r}
+both_proportions %>% filter(gene_biotype=='lncRNA') %>%
+  group_by(density_over_50=(Cytosol.y+Granule)>0.5,
+           sedmintation_over_50=Cytosol.x>0.5) %>%
+  tally()
+
+414/693
+
+```
+Pivot to long format for scatter plot
+```{r}
+slorna_proportions_long <- slorna_proportions %>%
+  mutate(Membrane=Membrane+Mitochondrion) %>%
+  dplyr::select(id, Cytosol, Nucleus, Membrane) %>%
+  pivot_longer(cols=-id, names_to='localisation', values_to='proportion_sed')
+
+dlorna_proportions_long <- dlorna_proportions %>%
+  mutate(Cytosol=Cytosol+Granule, Nucleus=Nucleus+Nucleolus) %>%
+  dplyr::select(id, Cytosol, Nucleus, Membrane) %>%
+  pivot_longer(cols=-id, names_to='localisation', values_to='proportion_den')
+
+both_proportion_long <- dlorna_proportions_long %>% merge(slorna_proportions_long, by=c('id','localisation')) %>%
+  filter(localisation %in% c('Membrane', 'Cytosol')) 
+```
+
+```{r}
+
+cors <- both_proportion_long %>%
+  group_by(localisation) %>%
+  summarise(p_cor=cor(proportion_den, proportion_sed, method='pearson'))
+
+p <- both_proportion_long %>%
+  ggplot(aes(proportion_den, proportion_sed, colour=localisation)) +
+  geom_point(alpha=0.1, size=0.1) +
+  facet_wrap(~localisation, scales='free_y') +
+  theme_camprot(base_size=15, border=FALSE, base_family='sans') +
+  ylab('Proportion\n(sedimentation LoRNA)') +
+  xlab('Proportion (density LoRNA)') +
+  scale_x_continuous(limits=c(NA,1), breaks=seq(0,1,0.2)) +
+  scale_y_continuous(limits=c(NA,1), breaks=seq(0,1,0.2)) +
+  theme(plot.title=element_text(hjust=0.5), strip.background=element_blank()) +
+  geom_abline(slope=1, linetype=2, colour='grey') +
+  scale_colour_manual(values=get_cat_palette(2)[2:1], guide=FALSE) +
+  geom_text(data=cors, x=0.2, y=0.9, aes(label=(paste("rho == ", round(p_cor, 2)))), parse=TRUE, size=5)
+
+print(p)
+
+ggsave('../../../../5_manuscript_figures/Figure_2/compare_frac/scatter.png', width=7, height=3.5)
+ggsave('../../../../5_manuscript_figures/Figure_2/compare_frac/scatter.pdf', width=7, height=3.5)
+
+```
+
+Plot marker proportions
+```{r}
+
+p <- dlorna_proportions_long %>% merge(slorna_proportions_long, by=c('id','localisation')) %>%
+  merge(fData(all_datasets_s$gene_size_bias$corrected)[,'markers',drop=FALSE], by.x='id', by.y='row.names') %>%
+  filter(markers!='unknown') %>%
+  ggplot(aes(proportion_den, fill=localisation)) +
+  geom_histogram() +
+  facet_wrap(~markers, ncol=1) +
+  theme_camprot(base_size=15, base_family='sans', border=FALSE) +
+  scale_fill_manual(values=get_cat_palette(5)[c(2,1,4)], name='') +
+  scale_x_continuous(breaks=seq(0, 1, 0.5)) +
+  theme(strip.background=element_blank()) +
+  xlab('Proportion')
+  
+print(p)
+
+ggsave('../../../../5_manuscript_figures/Figure_2/compare_frac/marker_proportions_d.png', height=7, width=3.5)
+ggsave('../../../../5_manuscript_figures/Figure_2/compare_frac/marker_proportions_d.pdf', height=7, width=3.5)
+
+p <- p + aes(proportion_sed)
+print(p)
+ggsave('../../../../5_manuscript_figures/Figure_2/compare_frac/marker_proportions_s.png', height=7, width=3.5)
+ggsave('../../../../5_manuscript_figures/Figure_2/compare_frac/marker_proportions_s.pdf', height=7, width=3.5)
+```
+
+
+
+
+
+

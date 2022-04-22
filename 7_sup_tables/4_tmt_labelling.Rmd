@@ -1,0 +1,115 @@
+---
+title: "Make experimental information tables"
+output: html_notebook
+---
+
+```{r}
+suppressMessages(library(tidyverse))
+suppressMessages(library(writexl))
+```
+
+```{r}
+lopit_labelling <- read.delim('../2_protein/raw/sample_info.tsv')
+total_labelling <- read.delim('../2_protein/raw/sample_info_total.tsv')
+```
+
+```{r}
+antibodies <- read.delim('./antibodies.txt')
+```
+
+
+
+```{r}
+rna_merge_details <- list(
+  'DMSO'=list(
+    '1'=list('1'=1:8, '2'=8:9, '3'=9:12, '4'=13:14, '5'=15, '6'=16, '7'=17, '8'=18:21),
+    '2'=list('1'=1:8, '2'=8:9, '3'=9:12, '4'=13:14, '5'=15, '6'=16, '7'=17, '8'=18:21),
+    '3'=list('1'=1:8, '2'=8:9, '3'=9:12, '4'=13:14, '5'=15, '6'=16, '7'=17, '8'=18:21),
+    '4'=list('1'=1:9, '2'=9:10, '3'=10:13, '4'=14, '5'=15, '6'=16, '7'=17, '8'=18:21)),
+  'TG'=list(
+    '1'=list('1'=1:8, '2'=8:9, '3'=9:13, '4'=14:15, '5'=16, '6'=17, '7'=18, '8'=19:21),
+    '2'=list('1'=1:8, '2'=8:9, '3'=9:12, '4'=13:14, '5'=15, '6'=16, '7'=17, '8'=18:21),
+    '3'=list('1'=1:8, '2'=8:9, '3'=9:12, '4'=13:14, '5'=15, '6'=16, '7'=17, '8'=18:21),
+    '4'=list('1'=1:8, '2'=8:9, '3'=9:13, '4'=14, '5'=15, '6'=16, '7'=17, '8'=18:21)))
+
+
+prot_merge_details <- list(
+  'DMSO'=list(
+    '1'=list('1'=1:7, '2'=8:9, '3'=10:12, '4'=13:14, '5'=15, '6'=16, '7'=17, '8'=18:21),
+    '2'=list('1'=1:7, '2'=8:9, '3'=10:12, '4'=13:14, '5'=15, '6'=16, '7'=17, '8'=18:21),
+    '3'=list('1'=1:7, '2'=8:9, '3'=10:12, '4'=13:14, '5'=15, '6'=16, '7'=17, '8'=18:21),
+    '4'=list('1'=1:8, '2'=9:10, '3'=11:13, '4'=14, '5'=15, '6'=16, '7'=17, '8'=18:21)),
+  'TG'=list(
+    '1'=list('1'=1:7, '2'=8:9, '3'=10:13, '4'=14:15, '5'=16, '6'=17, '7'=18, '8'=19:21),
+    '2'=list('1'=1:7, '2'=8:9, '3'=10:12, '4'=13:14, '5'=15, '6'=16, '7'=17, '8'=18:21),
+    '3'=list('1'=1:7, '2'=8:9, '3'=10:12, '4'=13:14, '5'=15, '6'=16, '7'=17, '8'=18:21),
+    '4'=list('1'=1:7, '2'=8:9, '3'=10:13, '4'=14, '5'=15, '6'=16, '7'=17, '8'=18:21)))
+
+```
+
+
+```{r}
+summarise_fractions <- function(fractions){
+  if(length(fractions)==1){
+    return(fractions)
+  } else{
+    return(sprintf('%s-%s', min(fractions), max(fractions)))
+  }
+}
+
+make_merge_table_from_nested_list <- function(merges_in_nested_list){
+  rows <- vector('list', length=(2*4*8))
+
+  ix <- 1
+  for(condition in names(merges_in_nested_list)){
+    for(replicate in names(merges_in_nested_list[[condition]])){
+      for(merge_fraction in names(merges_in_nested_list[[condition]][[replicate]])){
+        rows[[ix]] <- list(condition,
+                           as.numeric(replicate),
+                           as.numeric(merge_fraction),
+                           summarise_fractions(merges_in_nested_list[[condition]][[replicate]][[merge_fraction]]))
+        ix <- ix + 1
+      }
+    }
+  }
+  
+  merge_table <- data.table::rbindlist(rows) %>%
+    setNames(c('condition', 'replicate', 'merge_fraction', 'gradient_fractions')) %>%
+    mutate(condition=recode(condition, 'DMSO'='Control', 'TG'='UPR')) %>%
+    filter(replicate>1) %>%
+    mutate(replicate=(replicate-1))
+
+  return(merge_table)
+}
+
+
+
+rna_merge_table <- make_merge_table_from_nested_list(rna_merge_details)
+prot_merge_table <- make_merge_table_from_nested_list(prot_merge_details)
+
+
+print(rna_merge_table)
+print(prot_merge_table)
+```
+
+
+```{r}
+feature_data_to_write <- list('TMT_labels_frac'=lopit_labelling,
+                              'TMT_labels_total'=total_labelling,
+                              'Gradient_merge_rna'=rna_merge_table,
+                              'Gradient_merge_prot'=prot_merge_table,
+                              'Antibodies'=antibodies)
+
+
+write_xlsx(
+  feature_data_to_write,
+  path = "./experimental_details.xlsx",
+  col_names = TRUE,
+  format_headers = TRUE,
+  use_zip64 = FALSE
+)
+
+```
+
+
+

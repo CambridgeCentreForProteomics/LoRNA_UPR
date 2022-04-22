@@ -1,0 +1,389 @@
+---
+title: "Assessing lncRNA:mRNA readthrough"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Accurate quantification of RNA-Seq is inherently dependent on the quality
+  of the annotation. We are concerned about inaccurate quantification of
+  lncRNAs, where the assigned reads are simply read-through from an upstream
+  protein-coding gene.
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+
+To explore this, we will consider the estimated quantification and the proportional localisations derived from the quantification estimates and how this relates to:
+
+- Distance to upstream genes (protein coding or pseudogene)
+- Presence of 5' CAGE-Seq peak for lncRNA
+
+We will perform all the analyses at gene-level.
+```{r}
+library(MSnbase)
+library(camprotR)
+library(biomaRt)
+library(tidyverse)
+library(GenomicRanges)
+library(biobroom)
+library(ggbeeswarm)
+
+select <- dplyr::select
+```
+
+For 5' CAGE data we will use Hon et al
+```{r}
+fantom_catalog <- readxl::read_excel('../../../../../1_external/17_FANTOM/Hon_et_al/NIHMS1058548-supplement-tab1-8.xlsx', sheet=7)
+
+head(fantom_catalog)
+dim(fantom_catalog)
+
+cage_genes <- fantom_catalog$CAT_geneID %>% strsplit(split='\\.') %>% sapply('[[', 1)
+tail(cage_genes)
+```
+
+For distances, we use Ensembl database
+```{r}
+
+ensembl <- useEnsembl(biomart="ensembl", version=102, dataset="hsapiens_gene_ensembl")
+
+gene_positions <- getBM(attributes=c('ensembl_gene_id',
+                                     'transcript_biotype',
+                                     'gene_biotype',
+                                     'start_position',
+                                     'end_position',
+                                     'strand',
+                                     'chromosome_name',
+                                     'external_gene_name'),
+                        mart = ensembl)
+
+gene_positions <- gene_positions %>%
+  group_by(ensembl_gene_id, gene_biotype, chromosome_name, strand) %>%
+  summarise(start=min(start_position, na.rm=TRUE),
+            end=min(end_position, na.rm=TRUE))
+
+head(gene_positions)
+
+```
+
+We need to convert ensembl results into Granges objects. We want separate objects for lncRNAs, protein-coding and combined protein -coding + pseudogenes
+```{r}
+makeGrangeFromEnsembl <- function(ensembl_df){
+  gr <- GRanges(seqnames=ensembl_df$chromosome_name,
+                ranges=IRanges(ensembl_df$start, ensembl_df$end),
+                strand=ifelse(ensembl_df$strand==1, '+', '-'))  
+  gr$name <- ensembl_df$ensembl_gene_id
+  gr
+}
+
+gene_positions_pc_gr <- gene_positions %>%
+  filter(gene_biotype=='protein_coding') %>%
+  makeGrangeFromEnsembl()
+
+gene_positions_lnc_gr <- gene_positions %>%
+  filter(gene_biotype=='lncRNA') %>%
+  makeGrangeFromEnsembl()
+
+
+```
+
+
+Define a function to identify the nearest upstream and downstream genes
+```{r}
+get_nearest <- function(query, subject){
+  nearest_follow <- follow(query, subject)
+  nearest_precede <- precede(query, subject)  
+  return(list('nearest_follow'=nearest_follow, 'nearest_precede'=nearest_precede))
+}
+
+
+lncRNA_mRNA_nearest <- get_nearest(gene_positions_lnc_gr, gene_positions_pc_gr)
+
+```
+
+Define function to create dataframes from 'query' RNAs and their nearest RNAs ('subjects')
+```{r}
+
+bind_query_nearest_subject <- function(query_with_nearest,
+                                       subject_with_nearest,
+                                       subject,
+                                       q_name,
+                                       s_name,
+                                       direction){
+  
+  x <- as.data.frame(query_with_nearest)
+  colnames(x) <- paste(colnames(x), q_name, sep='_')
+  y <- as.data.frame(subject_with_nearest)
+  colnames(y) <- paste(colnames(y), s_name, sep='_')
+  
+  distance_nearest <- bind_cols(x, y) %>%
+    mutate('distance'=distance(query_with_nearest, subject_with_nearest),
+           'overlap'=suppressWarnings(overlapsAny(query_with_nearest, subject)),
+           'overlap_gene'=suppressWarnings(subject$name[findOverlaps(query_with_nearest, subject, select='first')]),
+           'c_overlap'=suppressWarnings(countOverlaps(query_with_nearest, subject)),
+           'direction'=direction)
+  
+  return(distance_nearest)
+}
+
+
+```
+
+Define function to obtain dataframes with distances upstream and downstream between query and subject sets of RNA
+```{r}
+get_distances <- function(query, subject, q_name, s_name){
+  
+  nearest <- get_nearest(query, subject)
+  
+  query_with_follow <- query[is.finite(nearest$nearest_follow),]
+  query_with_precede <- query[is.finite(nearest$nearest_precede),]
+  
+  nearest_follow_no_NA <- nearest$nearest_follow[is.finite(nearest$nearest_follow)]
+  nearest_precede_no_NA <- nearest$nearest_precede[is.finite(nearest$nearest_precede)]  
+
+  subject_with_follow <- subject[nearest_follow_no_NA,]
+  subject_with_precede <- subject[nearest_precede_no_NA,]
+
+  distance_upstream <- bind_query_nearest_subject(
+    query_with_follow, subject_with_follow, subject, q_name, s_name, 'upstream')
+  
+  distance_downstream <- bind_query_nearest_subject(
+    query_with_precede, subject_with_precede, subject, q_name, s_name, 'downstream')
+  
+  return(list('distance_downstream'=distance_downstream, 'distance_upstream'=distance_upstream))
+}
+
+lncRNA_mRNA_distances <- get_distances(gene_positions_lnc_gr, gene_positions_pc_gr, q_name='lncRNA', s_name='mRNA')
+
+```
+
+
+Checking contents of above objects
+```{r}
+head(lncRNA_mRNA_distances$distance_upstream)
+dim(lncRNA_mRNA_distances$distance_upstream)
+
+head(lncRNA_mRNA_distances$distance_downstream)
+dim(lncRNA_mRNA_distances$distance_downstream)
+```
+Distances for mRNA vs mRNA
+```{r}
+
+mRNA_mRNA_distances <- get_distances(gene_positions_pc_gr, gene_positions_pc_gr, q_name='mRNA_q', s_name='mRNA_s')
+
+head(mRNA_mRNA_distances$distance_upstream)
+dim(mRNA_mRNA_distances$distance_upstream)
+
+head(mRNA_mRNA_distances$distance_downstream)
+dim(mRNA_mRNA_distances$distance_downstream)
+
+```
+Reform distance dataframes into a single dataframe with the minimal information required
+```{r}
+
+get_minimal_distance_info <- function(distances, q_name, s_name){
+  
+  upstream_min_info <- distances$distance_upstream %>%
+    select(paste('name', q_name, sep='_'), paste('name', s_name, sep='_'),
+           distance, overlap, c_overlap, overlap_gene, direction, strand=paste('strand', s_name, sep='_'))
+  downstream_min_info <- distances$distance_downstream %>%
+    select(paste('name', q_name, sep='_'), paste('name', s_name, sep='_'),
+           distance, overlap, c_overlap, overlap_gene, direction, strand=paste('strand', s_name, sep='_'))
+  
+  return(bind_rows(upstream_min_info, downstream_min_info))
+}
+
+overlap <- get_minimal_distance_info(lncRNA_mRNA_distances, q_name='lncRNA', s_name='mRNA')
+
+lncRNA_mRNA_distances_min_info <- get_minimal_distance_info(lncRNA_mRNA_distances, q_name='lncRNA', s_name='mRNA')
+
+mRNA_mRNA_distances_min_info <- get_minimal_distance_info(mRNA_mRNA_distances, q_name='mRNA_q', s_name='mRNA_s')
+
+
+```
+
+Compare distances between lncRNA and mRNAs
+```{r}
+lncRNA_mRNA_distances_min_info %>%
+  filter(!overlap) %>%
+  ggplot(aes(log10(distance), colour=direction)) +
+  geom_density() +
+  theme_camprot()
+
+mRNA_mRNA_distances_min_info %>%
+  filter(c_overlap<2, direction=='upstream') %>%
+  ggplot(aes(log10(distance))) +
+  geom_density() +
+  theme_camprot()
+
+mRNA_mRNA_distances_min_info %>%
+  filter(c_overlap<2, direction=='upstream') %>%
+  mutate(type='mRNA vs mRNA') %>%
+  select(type, distance) %>%
+  rbind((lncRNA_mRNA_distances_min_info %>%
+    filter(!overlap, direction=='upstream') %>%
+    mutate(type='lncRNA vs mRNA') %>%
+    select(type, distance))) %>%
+  ggplot(aes(log10(distance), colour=type)) +
+  geom_density() +
+  theme_camprot() +
+  xlab('Distance to nearest\nupstream RNA (log10)') +
+  scale_colour_manual(values=get_cat_palette(4), name='')
+  
+
+```
+
+
+
+```{r}
+distance_cuts <- c(5E3, 1E4, 2E4, 3E4, 3E5)
+```
+
+
+
+
+
+
+Read in the proportions
+```{r}
+proportions <- readRDS('./out/proportions_single_table.rds')$gene %>%
+  mutate(Nuc=Nucleus+Nucleolus) %>%
+  select(id, condition, Cytosol, Nuc, Membrane, Granule=Cytosol_Light) %>%
+  pivot_longer(cols=-c(id,  condition),
+               names_to='Localisation', values_to='Proportion')
+
+```
+Annotate the proportions
+```{r}
+
+
+to_plot <- proportions %>%
+  filter(condition=='DMSO') %>%
+  filter(id %in% lncRNA_mRNA_distances_min_info$name_lncRNA) %>%
+  mutate(cage = id %in% cage_genes)
+
+
+```
+How does detection of 5' by CAGE affect localisation of lncRNA?
+```{r}
+
+to_plot %>%
+  ggplot(aes(Localisation, Proportion, colour=cage, group=cage)) +
+  geom_quasirandom(dodge.width=.5, size=0.25) +
+  theme_camprot()
+
+to_plot %>%
+  ggplot(aes(Proportion, colour=cage)) +
+  geom_density() +
+  facet_wrap(~Localisation, scales='free_y') +
+  theme_camprot(base_size=10)
+
+```
+Not massive, but with CAGE more likely to be high cytosol and less likely to be high Nuc by eye.
+```{r}
+
+
+lncRNA_proportions <- proportions %>%
+  filter(id %in% unique(lncRNA_mRNA_distances_min_info$name_lncRNA))
+
+pc_proportions <- proportions %>%
+  filter(id %in% unique(lncRNA_mRNA_distances_min_info$name_mRNA))
+
+lncRNA_mRNA_proportions <- proportions %>%
+  merge(lncRNA_mRNA_distances_min_info,
+        by.x='id', by.y='name_lncRNA') %>%
+  merge(pc_proportions,
+        by.x=c('condition', 'Localisation', 'name_mRNA'),
+        by.y=c('condition', 'Localisation', 'id'))
+
+mRNA_mRNA_proportions <- proportions %>%
+  merge(mRNA_mRNA_distances_min_info,
+        by.x='id', by.y='name_mRNA_q') %>%
+  merge(pc_proportions,
+        by.x=c('condition', 'Localisation', 'name_mRNA_s'),
+        by.y=c('condition', 'Localisation', 'id'))
+
+```
+
+
+Subset to mRNA in membrane in control conditions
+```{r}
+lncRNA_mRNA_proportions_dmso_mem <- lncRNA_mRNA_proportions %>%
+  filter(Localisation=='Membrane', condition=='DMSO')
+
+complete_lncRNA_mRNA_proportion_pairs <- lncRNA_mRNA_proportions_dmso_mem %>%
+  group_by(id) %>% tally() %>% filter(n==2) %>% pull(id)
+
+lncRNA_mRNA_proportions_dmso_mem_complete <- lncRNA_mRNA_proportions_dmso_mem %>%
+  filter(id %in% complete_lncRNA_mRNA_proportion_pairs)
+
+mRNA_mRNA_proportions_dmso_mem <- mRNA_mRNA_proportions %>% filter(Localisation=='Membrane', condition=='DMSO')
+
+complete_mRNA_mRNA_proportion_pairs <- mRNA_mRNA_proportions_dmso_mem %>%
+  group_by(id) %>% tally() %>% filter(n==2) %>% pull(id)
+
+mRNA_mRNA_proportions_dmso_mem_complete <- mRNA_mRNA_proportions_dmso_mem %>%
+  filter(id %in% complete_mRNA_mRNA_proportion_pairs)
+```
+
+
+
+Plot mRNA vs lncRNA membrane proportion where mRNA is upstream of the lncRNA. Note that lncRNAs sometimes have high membrane proportions when the upstream mRNA has a high membrane proportion, but never when the mRNA membrane proportion is low. This is highly suspect and most simply explained by low frequency read-through transcription of mRNA to generate longer 3' UTR forms, whose 3' reads are falsely assigned to the lncRNA.
+```{r}
+p <- lncRNA_mRNA_proportions_dmso_mem %>%
+  filter(!overlap, direction=='upstream') %>%
+  mutate(distance_binned=Hmisc::cut2(distance, cuts=distance_cuts)) %>%
+  mutate(cage=id %in% cage_genes) %>%
+  ggplot(aes(Proportion.y, Proportion.x)) +
+  geom_point() +
+  theme_camprot(base_size=10) +
+  theme(strip.text.y=element_text(size=5)) +
+  xlim(0,1) +
+  ylim(0,1) +
+  geom_abline(slope=1, colour='grey', linetype=2) +
+  xlab('Upstream mRNA membrane proportion') +
+  ylab('lncRNA Membrane proportion')
+
+print(p)
+print(p + aes(colour=cage))
+
+```
+
+
+Split by the distance between mRNA and lncRNA. Clearly, when they are a long way apart (> 30Kb), the lncRNA never has a high membrane proportion. This fits with the above explanation. 
+```{r, fig.height=6, fig.width=6}
+print(p + facet_wrap(~distance_binned))
+
+
+```
+
+We can also consider the CAGE peaks. Many of the lncRNA with high membrane proportion have CAGE peaks, so it's not clear this information can be used to filter out the lncRNAs with inaccurate localisation proportions.
+```{r}
+p <- lncRNA_mRNA_proportions_dmso_mem_complete %>%
+  filter(!overlap, direction=='upstream') %>%
+  mutate(distance_binned=Hmisc::cut2(distance, cuts=distance_cuts)) %>%
+  mutate(cage=id %in% cage_genes) %>%
+  ggplot(aes(Proportion.y, Proportion.x, colour=cage)) +
+  geom_point() +
+  theme_camprot(base_size=10) +
+  theme(strip.text.y=element_text(size=5)) +
+  xlim(0,1) +
+  ylim(0,1) +
+  geom_abline(slope=1, colour='grey', linetype=2) +
+  xlab('Upstream mRNA membrane proportion') +
+  ylab('lncRNA Membrane proportion')
+
+print(p)
+#print(p + facet_grid(direction~.))
+print(p + facet_wrap(~distance_binned))
+```
+
+
+```{r}
+saveRDS(lncRNA_mRNA_distances_min_info, './out/lncRNA_mRNA_distances_min_info.rds')
+```
+

@@ -1,0 +1,597 @@
+---
+title: "Membrane relocalisation resistance"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we examine the membrane relocalisation resistant transcripts/genes. We consider the role
+  of the position of the signal peptide/TM and then identify features which predict
+  reduced relocalisation upon ER stress
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+```{r}
+library(camprotR)
+library(tidyverse)
+library(MSnbase)
+library(biomaRt)
+```
+
+```{r}
+proportions_annotated <- readRDS('./out/proportions_annot.rds')
+
+all_datasets <- readRDS('../3_proportional_localisation/results/all_datasets_final.rds')
+```
+
+We'll initially model Tg membrane localisation as being solely dependent upon DMSO membrane localisation. The residuals from this model will then be used to identify the features associated with hyper/hypo membrane localisation.
+
+```{r}
+proportion_dmso_vs_tg <- proportions_annotated %>% lapply(function(x){
+  x %>%
+    dplyr::select(id, external_gene_name, gene_biotype, #ensembl_gene_id, transcript_biotype,
+                  Membrane, condition, distance_from_end, distance_from_start, conservative_signal_tm) %>%
+    pivot_wider(values_from=Membrane, names_from=condition) %>%
+    filter(is.finite(DMSO), is.finite(Tg))
+})
+
+proportion_dmso_vs_tg %>% names() %>% lapply(function(level){
+  p <- proportion_dmso_vs_tg[[level]] %>%
+    ggplot(aes(DMSO, Tg)) +
+    geom_point(size=0.25, alpha=0.25) +
+    geom_smooth(colour=get_cat_palette(6)[6]) +
+    theme_camprot(border=FALSE, base_size=15, base_family='sans') +
+    ggtitle('Membrane proportions') + 
+    xlab('Control') +
+    ylab('UPR') +
+    xlim(0, 1) +
+    ylim(0, 1) +
+    theme(plot.title=element_text(hjust=0.5))
+  
+  print(p)
+  ggsave(sprintf('../../../../../5_manuscript_figures/Figure_6/mem_proportions/dmso_tg_%s.png', level), width=3.5, height=3.5)
+  ggsave(sprintf('../../../../../5_manuscript_figures/Figure_6/mem_proportions/dmso_tg_%s.pdf', level), width=3.5, height=3.5)
+  
+  
+  return(NULL)
+})
+```
+
+```{r}
+tg_vs_dmso_mem_gam <- proportion_dmso_vs_tg %>% lapply(function(level){
+  mgcv::gam(Tg~s(DMSO, bs='cs'), data=level)
+})
+
+```
+
+```{r}
+tg_vs_dmso_mem_gam %>% lapply(mgcv::gam.check)
+```
+
+Model diagnostics look OK. Smoothing appears appropriate. There are more highly positive residuals, which is what we would expect given that we believe there are RNAs which are hyper membrane-localised in Tg relative to their DMSO membrane localisation.
+
+Now, let's determine the residuals and model using the features we expect may be predictive.
+
+```{r}
+residuals <- proportion_dmso_vs_tg %>%
+  names() %>% 
+  lapply(function(level){
+    proportion_dmso_vs_tg[[level]] %>% mutate(residual=tg_vs_dmso_mem_gam[[level]]$residuals)
+  })
+
+names(residuals) <- names(proportion_dmso_vs_tg)
+```
+
+
+```{r}
+
+residuals %>% names() %>% lapply(function(level){
+  p <- residuals[[level]] %>%
+    ggplot(aes(DMSO, Tg)) +
+    geom_point(aes(colour=residual>0.2, alpha=residual>0.2, size=residual>0.2)) +
+    geom_smooth(colour='black') +
+    theme_camprot() +
+    xlab('Membrane proportion (DMSO)') +
+    ylab('Membrane proportion (1hr Tg)') +
+    scale_size_manual(values=c(0.5, 1)) +
+    scale_alpha_manual(values=c(0.5, 1)) +
+    scale_colour_manual(values=c('grey35', get_cat_palette(2)[2])) +
+    xlim(0, 1) +
+    ylim(0, 1) +
+    ggtitle(level) +
+    theme(legend.position='none')
+  
+  print(p)
+  
+  return(NULL)
+})
+```
+
+```{r}
+residuals %>% names() %>% lapply(function(level){
+  p <- ggplot(residuals[[level]],
+              aes(distance_from_end, residual)) +
+    geom_point(size=0.25, alpha=0.25) +
+    theme_camprot(border=FALSE, base_size=15, base_family='sans') +
+    geom_smooth(colour=get_cat_palette(5)[5], method='loess') +
+    scale_x_continuous(trans='log10') +
+    ylab('GAM residual') +
+    xlab('Distance from first TM/signal\nto end of polypeptide (AAs)')
+
+  print(p)
+  ggsave(sprintf('../../../../../5_manuscript_figures/Figure_6/mem_proportions/distance_gam_residual_%s.png', level), width=3.5, height=3.5)
+  ggsave(sprintf('../../../../../5_manuscript_figures/Figure_6/mem_proportions/distance_gam_residual_%s.pdf', level), width=3.5, height=3.5)
+  
+  
+  print(p + aes(log10(distance_from_start)) +
+          xlab('Distance from first TM/signal\nto start of polypeptide (AAs)'))
+  
+  return(NULL)
+})
+
+```
+OK, so for RNAs encoding polypeptide with TM/signal, the distance from the first signal/TM to the end of the polypeptide seem like a good predictor of the residual. Where this is over 1000 AA, the RNA appears to be much more membrane localised than expected given the overall trend for reduced membrane localisation upon Tg. Does this suggest rapid re-association even at 1hr Tg? Suggests there is at least a basal level of translation for membrane-associated RNAs.
+
+Quick sidetrack, let's just compare the relationship between signal/TM postion and membrane localisation in DMSO & Tg
+```{r}
+library(ggridges)
+
+default_scipen <- getOption('scipen')
+options(scipen=999)
+to_plot <- proportions_annotated$transcript %>%
+  filter(is.finite(distance_from_end)) %>%
+  mutate(binned_distance= Hmisc::cut2(distance_from_end,
+                                      cuts=c(min(distance_from_end, na.rm=TRUE),
+                                             50,75,100,500,1000,2000,
+                                             max(distance_from_end, na.rm=TRUE))))
+
+p <- to_plot %>%
+  ggplot(aes(y=as.factor(binned_distance), x=Membrane)) +
+  #geom_violin() +
+  #ggridges::geom_density_ridges(quantile_lines=TRUE, stat = "binline", scale=0.9) +
+  geom_density_ridges(quantile_lines=TRUE, quantile_fun=function(x,...)median(x))+
+  theme_camprot(base_size=15, base_family='sans', border=FALSE) +
+  xlab('Proportion membrane') +
+  coord_flip() +
+  theme(strip.background=element_blank(),
+        axis.text.x=element_text(angle=45, vjust=1, hjust=1)) +
+  ylab('Distance from start of first\nsignal/TM to C-terminus (AA)') +
+  xlim(0,1)
+
+p1 <- p %+% to_plot[to_plot$condition=='DMSO',]
+print(p1)
+
+ggsave('../../../../../5_manuscript_figures/Figure_6/mem_proportions/distance_mem.png', p1, width=3.5, height=3.5)
+ggsave('../../../../../5_manuscript_figures/Figure_6/mem_proportions/distance_mem.pdf', p1, width=3.5, height=3.5)
+
+p2 <- p + facet_wrap(~condition)
+print(p2)
+ggsave('./plots/distance_signal_tm.png', p2)
+options(scipen=default_scipen)
+```
+
+The above is only relevant if the RNA has a predictor/known TM/signal though. Let's see how much difference that makes to the residual distribution overall.
+```{r}
+library(ggbeeswarm)
+residuals %>% names() %>% lapply(function(level){
+  
+  to_plot <- residuals[[level]]  %>%
+    mutate(ensembl_uniprot_signal_tm=ifelse(conservative_signal_tm, 'Signal/TM', 'No signal/TM'),
+           ensembl_singal_tm=ifelse(!is.na(distance_from_end), 'Signal/TM', 'No signal/TM'))
+
+  p1 <- to_plot %>%
+    filter(!is.na(conservative_signal_tm)) %>%
+    ggplot(aes(residual, colour=ensembl_uniprot_signal_tm)) +
+    theme_camprot(border=FALSE, base_size=15) +
+    ggtitle(level) +
+    xlab('Residual from GAM') +
+    ylab('Density') +
+    scale_colour_manual(values=get_cat_palette(2), name='Ensembl or Uniprot') +
+    geom_density()
+  
+  print(p1)
+  print(p1 + aes(colour=ensembl_singal_tm) +
+          scale_colour_manual(values=get_cat_palette(2), name='Ensembl'))
+  
+  p2 <- to_plot %>%
+    filter(!is.na(conservative_signal_tm)) %>%
+    ggplot(aes(ensembl_uniprot_signal_tm, residual)) +
+    theme_camprot(border=FALSE, base_size=15) +
+    ggtitle(level) +
+    ylab('Residual from GAM') +
+    xlab('Ensembl or Uniprot') +
+    geom_quasirandom(size=0.5)
+  
+  print(p2)
+  
+  p3 <- to_plot %>%
+    filter(!is.na(conservative_signal_tm)) %>%
+    group_by(ensembl_uniprot_signal_tm, hyper=residual>0.1) %>%
+    tally() %>%
+    ggplot(aes(ensembl_uniprot_signal_tm, n, fill=hyper)) +
+    theme_camprot(border=FALSE, base_size=15) +
+    ggtitle(level) +
+    ylab('Residual from GAM') +
+    xlab('Ensembl or Uniprot') +
+    geom_bar(stat='identity', position='fill') +
+    scale_fill_manual(values=get_cat_palette(2), name='GAM Residual > 0.1')
+  
+  print(p3)
+  
+  return(NULL)
+})
+```
+OK, so the residuals are overall much lower for RNAs without signal/TM, though there are still some over 0.1.
+
+IRES
+```{r}
+ires<- NULL
+
+ires$transcript <- readRDS('../../../../../1_external/7_IRES/ires_gr_transcripts.rds') %>%
+  pull(seqnames) %>%
+  unique()
+
+ensembl <- useEnsembl(biomart="ensembl", version=102, dataset="hsapiens_gene_ensembl")
+
+ires$gene <- getBM(
+  attributes=c('ensembl_transcript_id', 'ensembl_gene_id'),
+  mart=ensembl,
+  filters='ensembl_transcript_id',
+  values=ires$transcript) %>%
+  pull(ensembl_gene_id) %>%
+  unique()
+
+ires %>% lapply(length)
+```
+
+```{r}
+residuals_annot_ires <- residuals %>% names() %>% lapply(function(level){
+  ires_rnas <- ires[[level]]
+  residuals_level_annot <- residuals[[level]] %>% mutate(ires=id %in% ires_rnas)
+  print(table(residuals_level_annot$ires))
+  
+  return(residuals_level_annot)
+})
+
+names(residuals_annot_ires) <- names(residuals)
+```
+
+```{r}
+residuals_annot_ires %>% names() %>% lapply(function(level){
+  
+  p1 <- residuals_annot_ires[[level]] %>%
+    ggplot(aes(residual, colour=ires)) +
+    theme_camprot(border=FALSE, base_size=15) +
+    ggtitle(level) +
+    xlab('Residual from GAM') +
+    ylab('Density') +
+    scale_colour_manual(values=get_cat_palette(2), name='IRES') +
+    geom_density()
+  
+  print(p1)
+  
+  p2 <- ggplot(residuals_annot_ires[[level]],
+              aes(ires, residual)) +
+    geom_boxplot() +
+    theme_camprot(border=FALSE, base_size=15) +
+    ggtitle(level) +
+    ylab('Residual from GAM') +
+    xlab('IRES')
+
+  print(p2)
+  
+  return(NULL)
+})
+
+```
+OK, so really nothing to suggest IRES are important for the membrane hyper-localisation, at least for the sites identified by IRESbase
+
+Next, 5'UTR length
+```{r, message=FALSE, warning=FALSE}
+utr_lengths <- NULL
+utr_lengths$transcript <- getBM(attributes=c('ensembl_transcript_id',
+                                             'ensembl_gene_id',
+                                             '5_utr_start', '5_utr_end',
+                                             '3_utr_start', '3_utr_end'), mart = ensembl,
+                     filters = 'ensembl_transcript_id', values=residuals$transcript$id)
+
+utr_lengths$transcript <- utr_lengths$transcript %>%
+  group_by(ensembl_transcript_id, ensembl_gene_id) %>%
+  summarise(`5_utr_start`=min(`5_utr_start`, na.rm=TRUE),
+            `5_utr_end`=max(`5_utr_end`, na.rm=TRUE),
+            `3_utr_start`=min(`3_utr_start`, na.rm=TRUE),
+            `3_utr_end`=max(`3_utr_end`, na.rm=TRUE))
+
+utr_lengths$transcript <- utr_lengths$transcript %>%      
+  mutate(utr_5_length=`5_utr_end`-`5_utr_start`,
+         utr_3_length=`3_utr_end`-`3_utr_start`) %>%
+  dplyr::filter(is.finite(utr_5_length),
+                is.finite(utr_3_length))
+
+utr_lengths$gene <- utr_lengths$transcript %>%
+  group_by(ensembl_gene_id) %>%
+  summarise(`utr_3_length`=max(`utr_3_length`, na.rm=TRUE),
+            `utr_5_length`=max(`utr_5_length`, na.rm=TRUE))
+```
+
+```{r}
+
+residuals %>% lapply(dim)
+
+residuals_annot_utr <- residuals %>% names() %>% lapply(function(level){
+  if(level=='transcript'){
+    residuals_level_annot <- residuals[[level]] %>%
+      merge(utr_lengths[[level]], by.x='id', by.y='ensembl_transcript_id')
+    
+  } else{
+    residuals_level_annot <- residuals[[level]] %>%
+      merge(utr_lengths[[level]], by.x='id', by.y='ensembl_gene_id')
+  }
+  
+  return(residuals_level_annot)
+})
+
+names(residuals_annot_utr) <- names(residuals)
+residuals_annot_utr %>% lapply(dim)
+```
+```{r}
+residuals_annot_utr$transcript
+residuals_annot_utr %>% names() %>% lapply(function(level){
+  
+  p <- ggplot(residuals_annot_utr[[level]],
+              aes(log10(utr_3_length), residual)) +
+    geom_point(alpha=0.25, size=0.25) +
+    geom_smooth() +
+    theme_camprot(border=FALSE, base_size=15) +
+    ggtitle(level) +
+    ylab('Residual from GAM') +
+    xlab("3' UTR length (log10)")
+
+  print(p)
+  print(p + aes(log10(utr_5_length)) + xlab("5' UTR length (log10)"))
+  
+  return(NULL)
+})
+```
+No clear relationship between UTR lengths and membrane hyper-localisation.
+
+Lastly, let's look at uORFs.
+```{r}
+uORF_db <- readxl::read_excel('../../../../../1_external/8_uORF/Supplemental_Data_Tables_.xlsx', sheet=5, skip=2) %>%
+  separate(uORF_ID, into=c('ensembl_transcript_id'), remove=FALSE)
+
+uORF <- NULL
+uORF$transcript <- uORF_db[
+  (as.numeric(uORF_db$uORF_score)>25 & uORF_db$type=='UTRonly'),]$ensembl_transcript_id
+
+uORF$gene <- getBM(
+  attributes=c('ensembl_transcript_id', 'ensembl_gene_id'),
+  mart=ensembl,
+  filters='ensembl_transcript_id',
+  values=uORF$transcript) %>%
+  pull(ensembl_gene_id) %>%
+  unique()
+
+uORF %>% lapply(length)
+```
+
+```{r}
+residuals_annot_uorf <- residuals %>% names() %>% lapply(function(level){
+  uorf_rnas <- uORF[[level]]
+  residuals_level_annot <- residuals[[level]] %>% mutate(uorf=id %in% uorf_rnas)
+  print(table(residuals_level_annot$uorf))
+  
+  return(residuals_level_annot)
+})
+
+names(residuals_annot_uorf) <- names(residuals)
+```
+
+```{r}
+residuals_annot_uorf %>% names() %>% lapply(function(level){
+  
+  p1 <- residuals_annot_uorf[[level]] %>%
+    ggplot(aes(residual, colour=uorf)) +
+    theme_camprot(border=FALSE, base_size=15) +
+    ggtitle(level) +
+    xlab('Residual from GAM') +
+    ylab('Density') +
+    scale_colour_manual(values=get_cat_palette(2), name='uORF') +
+    geom_density()
+  
+  print(p1)
+  
+  p2 <- ggplot(residuals_annot_uorf[[level]],
+              aes(uorf, residual)) +
+    geom_boxplot() +
+    theme_camprot(border=FALSE, base_size=15) +
+    ggtitle(level) +
+    ylab('Residual from GAM') +
+    xlab('uORF')
+
+  print(p2)
+  
+  return(NULL)
+})
+
+```
+No clear relationship between predicted uORF and membrane hyper localisation
+
+
+OK, so when it comes to the modeling of the residuals, we're going to have to fit two models, one for RNAs with signal/TM in polypeptide, and one for the rest. In both cases, we'll want to see which RBPs are predictive of hyper membrane localisation in Tg. We'll also include IRES and uORF, even though we don't expect these to be predictive. We won't include UTR lengths since we don't expect these to be predictive and not all transcripts have annotated UTRs. 
+
+```{r}
+residuals_annot <- residuals %>% names() %>% lapply(function(level){
+  uorf_rnas <- uORF[[level]]
+  ires_rnas <- ires[[level]]
+  
+  residuals_level_annot <- residuals[[level]] %>%
+    mutate(uorf=id %in% uorf_rnas,
+           ires=id %in% ires_rnas)
+  
+  return(residuals_level_annot)
+})
+
+names(residuals_annot) <- names(residuals)
+```
+
+Read in the eCLIP binding data (binary bound/unbound for each protein and RNA)
+```{r}
+eclip_wide <- readRDS('../../../../../1_external/1_ENCORE_eCLIP/out/eCLIP_wide.rds')
+```
+
+```{r}
+
+
+level <- 'transcript'
+
+.data <- residuals_annot[[level]]
+print(dim(.data))
+
+eclip_data <- eclip_wide[[level]][intersect(rownames(eclip_wide[[level]]), .data$id),]
+print(dim(eclip_data))
+eclip_data <- eclip_data[,colSums(eclip_data)>100]
+print(dim(eclip_data))
+eclip_data <- eclip_data[rowSums(eclip_data)>0,]
+print(dim(eclip_data))
+
+.data <- .data %>% merge(eclip_data, by.x='id', by.y='row.names')
+
+eclip_cols <- colnames(eclip_data) 
+formula = paste0('residual~', paste0(eclip_cols, collapse='+'))
+```
+
+Use glmnet to perform LASSO Gaussian regression
+```{r}
+library(glmnet)
+
+.data_signal_tm <- .data %>% dplyr::filter(is.finite(distance_from_end)) %>%
+  mutate(log10_distance_from_end=log10(distance_from_end))
+
+set.seed(0) 
+cv.lasso <- cv.glmnet(data.matrix(.data_signal_tm[,c('log10_distance_from_end', 'ires', 'uorf',
+                                                     eclip_cols)]),
+                      .data_signal_tm$residual, alpha = 1, family = "gaussian")
+plot(cv.lasso)
+print(cv.lasso$lambda.min)
+print(cv.lasso$lambda.1se)
+```
+
+Plot coefficients for selected features
+```{r}
+coefficients <- coef(cv.lasso, cv.lasso$lambda.1se)
+as.data.frame.matrix(coefficients) %>%
+  setNames('coef') %>%
+  dplyr::filter(coef>0) %>%
+  tibble::rownames_to_column('feature') %>%
+  arrange(coef) %>%
+  mutate(feature=factor(feature, level=feature)) %>%
+  ggplot(aes(coef, feature)) +
+  geom_point() +
+  theme_camprot()
+```
+OK, all looking like it works above. Let's roll that out for genes + transcripts and +/- signal/TM annotations.
+
+```{r}
+models <- c('with_signal_tm', 'without_signal_tm')
+
+penalised_fits <- residuals_annot %>% names() %>% lapply(function(level){
+  
+  .data <- residuals_annot[[level]]
+  eclip_data <- eclip_wide[[level]][intersect(rownames(eclip_wide[[level]]), .data$id),]
+  print(dim(eclip_data))
+  eclip_data <- eclip_data[,colSums(eclip_data)>100]
+  print(dim(eclip_data))
+  eclip_data <- eclip_data[rowSums(eclip_data)>0,]
+  print(dim(eclip_data))
+
+  .data <- .data %>% merge(eclip_data, by.x='id', by.y='row.names')
+  eclip_cols <- colnames(eclip_data) 
+
+  level_penalised_fits <- models %>% lapply(function(model){
+    if(model=='with_signal_tm'){
+      .data_to_fit <- .data %>% dplyr::filter(is.finite(distance_from_end)) %>%
+        mutate(log10_distance_from_end=log10(distance_from_end))
+      x <- data.matrix(.data_to_fit[,c('log10_distance_from_end', 'ires', 'uorf', eclip_cols)])
+    } else{
+      .data_to_fit <- .data %>% dplyr::filter(is.na(distance_from_end))
+      x <- data.matrix(.data_to_fit[,c('ires', 'uorf', eclip_cols)])
+    }
+    
+    set.seed(0)
+    cv.lasso <- cv.glmnet(x, .data_to_fit$residual, alpha = 1, family = "gaussian")
+    
+    return(list('data_to_fit'=.data_to_fit, 'cv.lasso'=cv.lasso))
+  })
+  
+  names(level_penalised_fits) <- models
+  
+  return(list('data'=.data, 'penalised_fits'=level_penalised_fits))
+})
+
+names(penalised_fits) <- names(residuals_annot)
+```
+
+Plot coefficients
+```{r}
+
+penalised_coefficients <- penalised_fits %>% names() %>% lapply(function(level){
+  model_coefficients <- penalised_fits[[level]]$penalised_fits %>%
+    names() %>% lapply(function(model_type){
+    
+    cv.lasso <- penalised_fits[[level]]$penalised_fits[[model_type]]$cv.lasso
+    
+    plot(cv.lasso)
+    
+    coefficients <- coef(cv.lasso, cv.lasso$lambda.1se) %>%
+      as.data.frame.matrix() %>%
+      setNames('coef')
+    
+    p <- coefficients %>%
+      dplyr::filter(abs(coef)>0.005) %>%
+      tibble::rownames_to_column('feature') %>%
+      mutate(feature=recode(feature, 'log10_distance_from_end'='First TM/Signal to stop (AA; log10)')) %>%
+      filter(feature!='(Intercept)') %>%
+      arrange(coef) %>%
+      mutate(feature=factor(feature, level=feature)) %>%
+      ggplot(aes(coef, feature)) +
+      geom_bar(stat='identity') +
+      theme_camprot(base_size=15, base_family='sans', border=FALSE) +
+      #ggtitle(paste(level, model_type, sep=',\n')) +
+      xlab('Coefficient') +
+      ylab('')
+    
+    print(p)
+    ggsave(sprintf('../../../../../5_manuscript_figures/Figure_6/mem_proportions/model_rbps_%s_%s.png', level, model_type),
+           width=3.5, height=3.5)
+    ggsave(sprintf('../../../../../5_manuscript_figures/Figure_6/mem_proportions/model_rbps_%s_%s.pdf', level, model_type),
+           width=3.5, height=3.5)
+    return(coefficients)
+    
+  })
+  
+  names(model_coefficients) <- names(penalised_fits[[level]]$penalised_fits)
+  
+  return(model_coefficients)
+  
+})
+
+names(penalised_coefficients) <- names(penalised_fits)
+
+
+```
+
+```{r}
+saveRDS(penalised_coefficients, './out/penalised_coefficients.rds')
+saveRDS(penalised_fits, './out/penalised_fits.rds')
+saveRDS(residuals_annot, './out/residuals_annot.rds')
+saveRDS(residuals, './out/residuals.rds')
+
+```
+
+
+

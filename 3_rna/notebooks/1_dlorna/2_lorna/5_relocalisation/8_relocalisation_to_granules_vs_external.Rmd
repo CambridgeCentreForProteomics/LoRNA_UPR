@@ -1,0 +1,145 @@
+---
+title: "Features driving relocalisation to granules"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we consider the relocalisation to granules compared to external datasets
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+```{r}
+library(camprotR)
+library(tidyverse)
+library(MSnbase)
+library(biomaRt)
+library(ggbeeswarm)
+```
+Read in the quant and proportions
+```{r}
+total_tx <- readRDS('../1_data_processing/out/transcript_quant_total_res.rds')
+total_gene <- readRDS('../1_data_processing/out/gene_quant_total_res.rds')
+
+all_datasets <- readRDS('../3_proportional_localisation/results/all_datasets_final.rds')
+proportions <- readRDS('../5_relocalisation/out/proportions_annot.rds')
+proportions_per_rep <- readRDS('../3_proportional_localisation/results/proportions_per_rep.rds')
+```
+
+Summarise the mean TPM across control conditions
+```{r}
+tx_mean_exprs <- total_tx[,pData(total_tx)$condition=='DMSO'] %>% exprs() %>% rowMeans() %>%
+  data.frame() %>%
+  setNames('TPM')
+```
+
+Tx/gene length
+```{r}
+
+all_tx_ids <- unique(c(rownames(all_datasets$transcript$DMSO$corrected),
+                       rownames(all_datasets$transcript$Tg$corrected)))
+                     
+all_gene_ids <- unique(c(rownames(all_datasets$gene$DMSO$corrected),
+                         rownames(all_datasets$gene$Tg$corrected),
+                         fData(all_datasets$transcript$DMSO$corrected)$ensembl_gene_id,
+                         fData(all_datasets$transcript$Tg$corrected)$ensembl_gene_id))
+
+print(length(all_gene_ids))
+
+ensembl <- useEnsembl(biomart="ensembl", version=102, dataset="hsapiens_gene_ensembl")
+
+listAttributes(ensembl)
+transcript_lengths <- getBM(attributes=c('ensembl_transcript_id',
+                                         'ensembl_gene_id',
+                                         'transcript_length',
+                                         'transcript_tsl',
+                                         'transcript_gencode_basic',
+                                         'transcript_appris'),
+                                         mart = ensembl,
+                     filters = 'ensembl_gene_id',
+                     values=all_gene_ids)
+
+
+gene_length <- transcript_lengths %>% merge(tx_mean_exprs, by.x='ensembl_transcript_id', by.y='row.names') %>%
+  filter(TPM>0) %>%
+  mutate(norm_factor=TPM/sum(TPM)) %>%
+  group_by(ensembl_gene_id) %>%
+  summarise(weighted_mean_length=weighted.mean(transcript_length, norm_factor))
+
+
+rna_lengths <- list('gene'=tibble::column_to_rownames(tibble::remove_rownames(gene_length), 'ensembl_gene_id'),
+                    'transcript'=tibble::column_to_rownames(
+                      tibble::remove_rownames(transcript_lengths), 'ensembl_transcript_id'))
+```
+
+
+Get primary localisation in control conditions
+```{r}
+major_loc_dmso <- proportions %>% lapply(function(x){
+  x %>%
+    filter(condition=='DMSO') %>%
+    #tibble::column_to_rownames('id') %>%
+    mutate(Nucleus=Nucleus+Nucleolus) %>%
+    dplyr::select(id, Cytosol, Granule, Nucleus, Membrane) %>%
+    pivot_longer(-id) %>%
+    #filter(value>0.5) %>%
+    group_by(id) %>%
+    slice_max(order_by=value, n=1, with_ties=FALSE) %>%
+    tibble::column_to_rownames('id') %>%
+    setNames(c('major_localisation', 'proportion'))
+  })
+
+table(major_loc_dmso$gene$major_localisation)
+table(major_loc_dmso$transcript$major_localisation)
+```
+
+
+
+Compare granule relocalisation to Namkoong et al change in granules..
+```{r}
+
+granule_relocalisation <- proportions %>% names() %>% lapply(function(level){
+  
+  proportions[[level]] %>%
+    #filter(sd_Granule<0.1) %>%
+    dplyr::select(id, condition, Granule, Signal_TM, uniprot_signal_tm, conservative_signal_tm) %>%
+    pivot_wider(names_from=condition, values_from=Granule) %>%
+    filter(is.finite(DMSO), is.finite(Tg)) %>%
+    mutate(diff=Tg-DMSO) %>%
+    merge(rna_lengths[[level]], by.x='id', by.y='row.names', all.x=TRUE) %>%
+    merge(major_loc_dmso[[level]], by.x='id', by.y='row.names', all.x=TRUE)
+})
+
+
+names(granule_relocalisation) <- names(proportions)
+```
+
+
+
+
+
+```{r, fig.height=7, fig.width=3.5}
+namkoong_et_al <- readRDS('../../../../../1_external/3_granules/Namkoong_et_al/out/Namkoong_et_al_S1.rds')
+
+p <- granule_relocalisation$gene %>%
+  merge(namkoong_et_al, by.x='id', by.y="hsapiens_homolog_ensembl_gene") %>%
+  filter(major_localisation %in% c('Cytosol', 'Membrane'), proportion>0.5) %>%
+  ggplot(aes(ifelse(delRNA._difference>0, 'Increased', 'Decreased'), diff)) +
+  geom_hline(yintercept=0, linetype=2, colour='grey') +
+  geom_quasirandom() +
+  geom_boxplot(width=0.2, notch=TRUE) +
+  theme_camprot(border=FALSE, base_size=15, base_family='sans') +
+  facet_wrap(~(paste0('From ', tolower(major_localisation))), ncol=1) +
+  xlab('Change in Namkoong et al') +
+  ylab('Change in granule proportion') +
+  theme(strip.background=element_blank())
+
+print(p)
+ggsave('../../../../../5_manuscript_figures/Figure_5/external/Namkoong.png', height=7, width=3.5)
+ggsave('../../../../../5_manuscript_figures/Figure_5/external/Namkoong.pdf', height=7, width=3.5)
+```
+OK, so there is some agreement, but it's not perfect by any means. Much better for the membrane localised RNAs.

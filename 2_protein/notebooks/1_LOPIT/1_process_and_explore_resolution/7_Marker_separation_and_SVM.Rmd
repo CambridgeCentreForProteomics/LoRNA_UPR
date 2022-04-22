@@ -1,0 +1,200 @@
+---
+title: "Inspect the nuclear protein profiles"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we check the SVM F1 scores as a quick assessment of how distinct the marker sets are
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+```{r}
+library(tidyverse)
+library(camprotR)
+library(pRoloc)
+library(pRolocdata)
+library(pRolocExt)
+```
+```{r}
+colours <- readRDS('../../../../6_shiny_app/out/shiny_colours.rds')$Protein %>% unname()
+```
+
+Read in protein-level data
+```{r}
+combined_protein_res <- readRDS('../../results/combined_protein_res_with_tsne.rds')
+```
+
+
+```{r}
+sigma <- 10^(-2:1)
+cost <- 2^(2:10)
+times <- 50
+```
+
+Let's compare macro F1 with SVM.
+
+```{r, eval=FALSE}
+
+svm_params <- combined_protein_res %>% lapply(function(condition){
+    condition %>%
+      filterNA() %>%
+      svmOptimisation(times=times, verbose=T,
+                      class.weights=classWeights(condition),
+                      sigma=sigma, cost=cost)
+})
+
+saveRDS(svm_params, '../../results/svm_params.rds')
+```
+
+
+
+Let's compare the macro F1 scores
+```{r}
+svm_params <- readRDS('../../results/svm_params.rds')
+
+names(svm_params)
+for(condition in svm_params){
+  print(plot(condition))
+  print(levelPlot(condition))
+}
+
+svm_params %>% names() %>% lapply(function(condition){
+    data.frame(getF1Scores(svm_params[[condition]])) %>%
+      mutate(condition=condition)
+  }) %>% do.call(what='rbind') %>%
+      ggplot(aes(condition, F1)) +
+    geom_boxplot(notch=TRUE) +
+    theme_camprot() +
+    ylim(0.7, 1) +
+    xlab('') +
+    ylab('Macro F1') +
+  scale_colour_manual(values=get_cat_palette(3), name='')
+
+
+```
+
+
+
+Now let's inspect the marker set level F1 scores
+
+```{r}
+
+for(condition in names(svm_params)){
+    
+  params <- svm_params[[condition]]
+  
+  f1scoreperO <- matrix(0, times, dim(params@cmMatrices[[1]])[1])
+  
+  for(i in 1:times){
+    
+    conf <- params@cmMatrices[[i]]
+    
+    f1perO <- MLInterfaces::F1(conf, naAs0 = TRUE)
+    
+    f1scoreperO[i, ] <- f1perO
+  }
+  
+  OrganelleF1 <- as.data.frame(f1scoreperO)
+  colnames(OrganelleF1) <- getMarkerClasses(combined_protein_res[[condition]])
+  
+  OrganelleF1 %>% mutate('condition'=condition) 
+  
+}
+
+
+organalle_f1 <- svm_params %>% names() %>% lapply(function(condition){
+  
+  params <- svm_params[[condition]]
+  
+  f1scoreperO <- matrix(0, times, dim(params@cmMatrices[[1]])[1])
+  
+  for(i in 1:times){
+    
+    conf <- params@cmMatrices[[i]]
+    
+    f1perO <- MLInterfaces::F1(conf, naAs0 = TRUE)
+    
+    f1scoreperO[i, ] <- f1perO
+  }
+  
+  OrganelleF1 <- as.data.frame(f1scoreperO)
+  print(dim)
+  colnames(OrganelleF1) <- getMarkerClasses(combined_protein_res[[condition]])
+  
+  OrganelleF1 %>% mutate(condition=condition) 
+}) %>% do.call(what='rbind')
+
+
+organalle_f1 %>% pivot_longer(-condition, names_to='marker_set', values_to='F1') %>%
+  ggplot(aes(marker_set, F1, colour=condition)) +
+  geom_boxplot(position='dodge', notch=TRUE) +
+  theme_camprot(base_size=12) +
+  scale_colour_manual(values=get_cat_palette(4)[3:4], name='') +
+  theme(strip.text=element_text(size=8), axis.text.x=element_text(angle=45, hjust=1, vjust=1), aspect.ratio=0.2) +
+  xlab('')
+```   
+Per organelle plot for just DMSO (Control)
+```{r}
+
+organalle_f1_to_plot <- organalle_f1 %>%
+  filter(condition=='DMSO') %>%
+  pivot_longer(-condition, names_to='marker_set', values_to='F1') %>%
+  mutate(marker_set=recode(Hmisc::capitalize(tolower(marker_set)), 'Er'='ER', 'Pm'='PM'))
+  
+organalle_f1_to_plot %>% group_by(marker_set) %>%
+  summarise(mean_f1=mean(F1),
+            median_f1=median(F1))
+
+organalle_f1_to_plot <- organalle_f1_to_plot %>% mutate(marker_set=factor(marker_set, levels=rev(unique(marker_set))))
+  
+p <- organalle_f1_to_plot %>%
+  ggplot(aes(F1, marker_set, colour=marker_set)) +
+  geom_boxplot(position='dodge', notch=TRUE) +
+  theme_camprot(base_size=15, border=FALSE, base_family='sans') +
+  #scale_colour_manual(values=rev(colours[1:12]), guide=FALSE) +
+  scale_colour_manual(values=rev(getStockcol()[1:12]), guide=FALSE) +
+  theme(aspect.ratio=3) +
+  ylab('') +
+  scale_x_continuous(breaks=seq(0,1,0.5), limits=c(0,1)) +
+  #theme(axis.text.y = element_text(colour=rev(colours[1:12])))
+  theme(axis.text.y = element_text(colour=rev(getStockcol()[1:12])))
+
+print(p)
+
+ggsave('../../../../5_manuscript_figures/Figure_1/protein_profiles/svm_scores.png', height=2.5, width=5)
+ggsave('../../../../5_manuscript_figures/Figure_1/protein_profiles/svm_scores.pdf', height=2.5, width=5)
+
+```
+DMSO classifications onto t-SNE.
+```{r, fig.height=5, fig.width=5}
+
+DMSO_classifications <- combined_protein_res$DMSO %>% filterNA() %>% svmClassification(assessRes=svm_params$DMSO)
+
+p <- DMSO_classifications %>%
+  fData() %>%
+  mutate(svm=recode(Hmisc::capitalize(tolower(svm)), 'Er'='ER', 'Pm'='PM')) %>%
+  ggplot(aes(`Dimension 1`, `Dimension 2`, colour=svm, alpha=svm.scores^2, size=svm.scores^2)) +
+  geom_point() +
+  theme_camprot(border=FALSE, base_family='sans', base_size=15) +
+  scale_colour_manual(values=colours, name='') +
+  scale_radius(range=c(0,1), guide=FALSE, limits=c(0,1)) +
+  scale_alpha_continuous(range=c(0,1), guide=FALSE, limits=c(0,1))
+  
+print(p)
+```
+
+
+
+
+
+```{r}
+ggsave('../../../../5_manuscript_figures/Figure_1/protein_profiles/DMSO_tsne_svm.png', height=3.5, width=5)
+ggsave('../../../../5_manuscript_figures/Figure_1/protein_profiles/DMSO_tsne_svm.pdf', height=3.5, width=5)
+
+```
+

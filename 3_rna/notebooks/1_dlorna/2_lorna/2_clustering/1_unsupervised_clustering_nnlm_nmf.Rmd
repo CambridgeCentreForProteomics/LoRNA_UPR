@@ -1,0 +1,349 @@
+---
+title: "Unsupervised clustering using NNLM NMF"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we perform semi-supervised clustering by NNMF using the NNLM package. 
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+```{r}
+library(NNLM)
+library(tidyverse)
+library(camprotR)
+library(pRoloc)
+library(pRolocExt)  
+library(pbapply)
+```
+
+Example from NNLM vignette
+```{r}
+set.seed(678);
+
+n <- 400;
+m <- 50;
+k <- 3;
+W  <- matrix(runif(n*k),  n, k);
+H  <- matrix(10*runif(k*m),  k, m);
+noise <- matrix(rnorm(n*m), n, m);
+A <- W %*% H + noise;
+A[A < 0] <- 0;
+
+plot(-1, xlim = c(1,6), ylim = c(0.5, 2.5), xlab = "Rank", ylab = "MSE")
+cols <- c('deepskyblue', 'orange', 'firebrick1', 'chartreuse3');
+for (col in cols) {
+	ind <- sample(length(A), 0.3*length(A));
+	A2 <- A;
+	A2[ind] <- NA;
+	err <- sapply(X = 1:6,
+		FUN = function(k) {
+			z <- nnmf(A2, k);
+			c(mean((with(z, W %*% H)[ind] - A[ind])^2), tail(z$mse, 1));
+			}
+		);
+	invisible(lines(err[1,], col = col, type = 'b'));
+	invisible(lines(err[2,], col = col, type = 'b', lty = 2));
+	}
+```
+
+
+Re-write into generalised function that can be applied to LoRNA dataset
+```{r}
+set.seed(1);
+
+compareK <- function(obj, min_k=1, max_k=7, iterations=5, fraction_missing=0.2){
+
+  A <- obj
+  
+  err_per_iter <- pblapply(1:iterations, function(it){
+  	ind <- sample(length(A), fraction_missing*length(A));
+  	A2 <- A;
+  	A2[ind] <- NA;
+  	err <- sapply(X = min_k:max_k,
+  		FUN = function(k) {
+  			z <- nnmf(A2, k, verbose=0); 
+  			c(mean((with(z, W %*% H)[ind] - A[ind])^2), tail(z$mse, 1));
+  			}
+  		);
+    return(err)
+  })
+  
+  err_per_iter %>% do.call(what='rbind') %>%
+    data.frame() %>%
+    setNames(min_k:max_k) %>%
+    mutate(iteration=rep(1:iterations, each=2),
+           subset=rep(c('Imputed', 'All'),iterations)) %>%
+    pivot_longer(names_to='k', values_to='MSE', -c(subset, iteration))
+}
+
+
+simulation_k <- compareK(A)
+
+
+
+```
+Function to plot comparison of K values
+```{r}
+plot_compare_k <- function(obj_k){
+  
+  p <- obj_k %>%
+    ggplot(aes(k, MSE, colour=subset)) +
+    geom_point() +
+    geom_line(aes(group=interaction(subset, iteration))) +
+    theme_camprot() +
+    scale_colour_manual(values=get_cat_palette(2), name='')
+  
+  return(p)
+  
+}
+```
+
+Check results of simulation as per vignette
+```{r}
+p_sim <- plot_compare_k(simulation_k) + ggtitle('Simulated data')
+print(p_sim)
+```
+
+Repeating with LoRNA data. Not re-evalulated by default as this takes a long time to run
+```{r, eval=FALSE}
+dlorna <- readRDS('../1_data_processing/out/all_datasets.rds')$gene
+
+dlorna_k <- lapply(dlorna, function(x){
+  lapply(x, function(y){
+    compareK(exprs(y), iterations=6)
+  })
+})
+
+saveRDS(dlorna_k, './out/dlorna_k.rds')
+```
+
+```{r}
+
+dlorna_k <- readRDS('./out/dlorna_k.rds')
+
+k_plots <- NULL
+for(condition in names(dlorna_k)){
+  for(type in names(dlorna_k[[condition]])){
+    label = paste(condition, type, sep=', ')
+    p <- plot_compare_k(dlorna_k[[condition]][[type]]) + ggtitle(label)
+    k_plots[[label]] <- p
+    print(p)
+  }
+}
+```
+
+```{r}
+p <- k_plots$`DMSO, uncorrected` +
+  theme_camprot(base_family='sans', base_size=15, border=FALSE) +
+  theme(legend.position=c(1,1),
+        legend.justification=c(1,1),
+        legend.background=element_blank(),
+        plot.title=element_blank())
+
+print(p)
+ggsave('../../../../../5_manuscript_figures/Figure_1/rna_clustering/selecting_k.png', width=3.5, height=3.5)
+ggsave('../../../../../5_manuscript_figures/Figure_1/rna_clustering/selecting_k.pdf', width=3.5, height=3.5)
+```
+
+Some of the iterations give far higher MSEs with large k values. To properly inspect the relationship between k and MSE, we need to restrict the y-axis
+```{r}
+
+
+print(k_plots$`DMSO, uncorrected` + coord_cartesian(ylim=c(0,0.001)))
+print(k_plots$`DMSO, corrected` + coord_cartesian(ylim=c(0,0.001)))
+
+print(k_plots$`Tg, uncorrected` + coord_cartesian(ylim=c(0,0.0025)))
+print(k_plots$`Tg, corrected` + coord_cartesian(ylim=c(0,0.0025)))
+
+```
+
+OK, so based on the above, I conclude the following:
+- Uncorrected DMSO data: k=5 or k=6 is optimal, with k=5 very slightly lower
+- Uncorrected Tg data: k=4 or k=5 is optimal, with k=4 slightly lower
+
+- Corrected DMSO data: k=5 is optimal
+- Corrected Tg data: k=4 has the lowest range of MSE.
+
+```{r}
+optimal_k <- list('DMSO'=list('corrected'=5, 'uncorrected'=5),
+                  'Tg'=list('corrected'=4, 'uncorrected'=4))
+```
+
+
+Now let's perform the NMF with the chosen values for k
+```{r}
+set.seed(1)
+
+runNNMF <- function(obj, k, allocation_cut_off=0.5){
+  
+  nmfRes <- nnmf(exprs(obj), k=k, verbose=0)
+
+  H <- nmfRes$H # Get organelle signature matrix
+
+  rownames(H) <- paste0("NNMF_", 1:k) # each row of H corresponds to a localisation profile
+
+  W <- nmfRes$W
+  W <- W/rowSums(W) # normalise W so it proportions rather than relative intensities
+  colnames(W) <- rownames(H) # match colnames of W with rownames H 
+
+  allocation <- apply(W,1, function(x)rownames(H)[which.max(x)]) # allocated to most likely
+  allocation.prob <- apply(W,1, function(x)x[which.max(x)]) # allocation "probability"
+
+  fData(obj)$allocation <- allocation[rownames(obj)]
+  fData(obj)$allocation.prob <- allocation.prob[rownames(obj)]
+  fData(obj)$allocation_confident <- fData(obj)$allocation
+  fData(obj)$allocation_confident[fData(obj)$allocation.prob < allocation_cut_off] <- "unknown"
+
+  fData(obj) <- transform(merge(fData(obj), W, by="row.names"),
+                          row.names=Row.names, Row.names=NULL)[rownames(fData(obj)),]
+  return(obj)
+}
+
+
+```
+
+
+```{r}
+dlorna_nnmf <- lapply(names(dlorna), function(condition){
+  results <- lapply(names(dlorna[[condition]]), function(type){
+    nnmf_res <- runNNMF(dlorna[[condition]][[type]],
+                        k=optimal_k[[condition]][[type]], allocation_cut_off=0.5)
+    nnmf_res
+  })
+  names(results) <- names(dlorna$DMSO)
+  return(results)
+})
+
+names(dlorna_nnmf) <- names(dlorna)
+
+```
+
+And then visualise the results
+
+```{r}
+visualise_nnmf_results <- function(obj, label=''){
+  
+  hc <- mrkHClust(obj, plot = FALSE)
+  mm <- getMarkerClasses(obj)
+  ord <- levels(factor(mm))[order.dendrogram(hc)]
+
+  fmat <- mrkConsProfiles(obj)
+  
+  p <- plotConsProfiles(fmat, order = ord, plot=FALSE) +
+    scale_fill_continuous(name='Sum norm.\nintensity',
+                          low = "white", high=get_cat_palette(1)) +
+    scale_x_discrete(labels=pData(obj)$fraction) +
+    theme_camprot(base_size=15) +
+    xlab('') + 
+    geom_vline(xintercept=8.5) +
+    geom_vline(xintercept=16.5)
+  
+  print(p)
+  
+  hc <- mrkHClust(obj, fcol='allocation_confident', plot = FALSE)
+  mm <- getMarkerClasses(obj, fcol='allocation_confident')
+  ord <- levels(factor(mm))[order.dendrogram(hc)]
+
+  fmat <- mrkConsProfiles(obj, fcol='allocation_confident')
+  
+  p <- plotConsProfiles(fmat, order = ord, plot=FALSE) +
+    scale_fill_continuous(name='Sum norm.\nintensity',
+                          low = "white", high=get_cat_palette(1)) +
+    scale_x_discrete(labels=pData(obj)$fraction) +
+    theme_camprot(base_size=15) +
+    xlab('') + 
+    geom_vline(xintercept=8.5) +
+    geom_vline(xintercept=16.5)
+  
+  print(p)
+  
+  plot2D(obj, fcol='markers')
+  addLegend(obj,fcol='markers')
+  
+  alphas <- (length(getMarkerClasses(obj, 'allocation_confident')) *
+             classWeights(obj, 'allocation_confident'))
+  
+  pca_proj <- make_proj(obj, fcol = 'allocation_confident')
+  
+  x_col <- colnames(pca_proj)[1]
+  y_col <- colnames(pca_proj)[2]
+  
+  pca_proj <- data.frame(pca_proj)
+  
+  p <- pca_proj %>%
+    arrange(markers!='unknown') %>%
+    ggplot(aes_string(colnames(pca_proj)[1], colnames(pca_proj)[2])) +
+    xlab(x_col) +
+    ylab(y_col) +
+    theme_camprot() +
+    guides(alpha=FALSE) +
+    geom_point() +
+    aes(colour=markers, alpha=markers=='unknown') +
+    scale_alpha_manual(values=c(1, 0.1)) +
+    scale_colour_manual(name='', values=c(get_cat_palette(length(alphas)), 'grey')) +
+    ggtitle(label)
+  
+  print(p)
+  
+  pca_proj <- make_proj(obj, fcol = 'allocation_confident', dims=c(3,4))
+  
+  x_col <- colnames(pca_proj)[1]
+  y_col <- colnames(pca_proj)[2]
+  
+  pca_proj <- data.frame(pca_proj)
+  
+  p <- pca_proj %>%
+    arrange(markers!='unknown') %>%
+    ggplot(aes_string(colnames(pca_proj)[1], colnames(pca_proj)[2])) +
+    xlab(x_col) +
+    ylab(y_col) +
+    theme_camprot() +
+    guides(alpha=FALSE) +
+    geom_point() +
+    aes(colour=markers, alpha=markers=='unknown') +
+    scale_alpha_manual(values=c(1, 0.1)) +
+    scale_colour_manual(name='', values=c(get_cat_palette(length(alphas)), 'grey')) +
+    ggtitle(label)
+  
+  print(p)
+  
+  .data <- obj
+  .data <- .data[fData(.data)$allocation_confident != 'unknown',]
+  
+  p <- .data %>%
+    plot_marker_profiles(fcol='allocation_confident', facet_by='markers', group_by='replicate', alpha=max(0.05, alphas*2)) +
+    scale_x_discrete(labels=pData(.data)$fraction) +
+    theme_camprot(base_size=12) +
+    theme(axis.text.x=element_text(angle=90, vjust=0.5, hjust=1), legend.position='none') +
+    scale_colour_manual(values=get_cat_palette(length(alphas))) + 
+    geom_vline(xintercept=8.5) +
+    geom_vline(xintercept=16.5) +
+    ggtitle(label)
+  
+  print(p)
+}
+
+```
+
+```{r}
+names(dlorna_nnmf) %>%
+  sapply(function(condition){
+    names(dlorna_nnmf[[condition]]) %>%
+      sapply(function(type){
+        label = paste(condition, type, sep=', ')
+        visualise_nnmf_results(dlorna_nnmf[[condition]][[type]], label)
+      })
+  })
+```
+
+
+```{r}
+saveRDS(dlorna_nnmf, './out/dlorna_gene_nnmf.rds')
+```
+

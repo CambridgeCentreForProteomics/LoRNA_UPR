@@ -1,0 +1,591 @@
+---
+title: "Features driving relocalisation to granules"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we extract the features we belive may contribute to relocalisation to granules
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+```{r}
+library(camprotR)
+library(tidyverse)
+library(MSnbase)
+library(biomaRt)
+library(ggbeeswarm)
+library(coRdon)
+```
+Read in quantification and proportion objects.
+```{r}
+total_tx <- readRDS('../2_data_processing/out/transcript_quant_total_res.rds')
+total_gene <- readRDS('../2_data_processing/out/gene_quant_total_res.rds')
+
+all_datasets <- readRDS('../4_proportional_localisation/results/all_datasets_final.rds')
+proportions <- readRDS('../6_relocalisation/out/proportions_annot.rds')
+proportions_per_rep <- readRDS('../4_proportional_localisation/results/proportions_per_rep.rds')
+```
+
+Determine mean transcript expression. We will use this downstream for codon optimality.
+```{r}
+tx_mean_exprs <- total_tx[,pData(total_tx)$condition=='DMSO'] %>% exprs() %>% rowMeans() %>%
+  data.frame() %>%
+  setNames('TPM')
+```
+
+Get transcript/gene lengths. 
+```{r}
+
+all_tx_ids <- unique(c(rownames(all_datasets$transcript$DMSO$corrected),
+                       rownames(all_datasets$transcript$Tg$corrected)))
+                     
+all_gene_ids <- unique(c(rownames(all_datasets$gene$DMSO$corrected),
+                         rownames(all_datasets$gene$Tg$corrected),
+                         fData(all_datasets$transcript$DMSO$corrected)$ensembl_gene_id,
+                         fData(all_datasets$transcript$Tg$corrected)$ensembl_gene_id))
+
+print(length(all_gene_ids))
+
+ensembl <- useEnsembl(biomart="ensembl", version=102, dataset="hsapiens_gene_ensembl")
+
+listAttributes(ensembl)
+transcript_lengths <- getBM(attributes=c('ensembl_transcript_id',
+                                         'ensembl_gene_id',
+                                         'transcript_length',
+                                         'transcript_tsl',
+                                         'transcript_gencode_basic',
+                                         'transcript_appris'),
+                                         mart = ensembl,
+                     filters = 'ensembl_gene_id',
+                     values=all_gene_ids)
+
+
+gene_length <- transcript_lengths %>% merge(tx_mean_exprs, by.x='ensembl_transcript_id', by.y='row.names') %>%
+  filter(TPM>0) %>%
+  mutate(norm_factor=TPM/sum(TPM)) %>% # create a weighting factor from the TPM for each transcript
+  group_by(ensembl_gene_id) %>%
+  summarise(weighted_mean_length=weighted.mean(transcript_length, norm_factor))
+
+plot(density(log10(gene_length$weighted_mean_length)))
+summary(log10(gene_length$weighted_mean_length))
+
+rna_lengths <- list('gene'=tibble::column_to_rownames(tibble::remove_rownames(gene_length), 'ensembl_gene_id'),
+                    'transcript'=tibble::column_to_rownames(
+                      tibble::remove_rownames(transcript_lengths), 'ensembl_transcript_id'))
+```
+
+
+Identify the dominant localisation in control conditions
+```{r}
+major_loc_dmso <- proportions %>% lapply(function(x){
+  x %>%
+    filter(condition=='DMSO') %>%
+    #tibble::column_to_rownames('id') %>%
+    mutate(Nucleus=Nucleus+Nucleolus) %>%
+    dplyr::select(id, Cytosol, Granule, Nucleus, Membrane) %>%
+    pivot_longer(-id) %>%
+    #filter(value>0.5) %>%
+    group_by(id) %>%
+    slice_max(order_by=value, n=1, with_ties=FALSE) %>%
+    tibble::column_to_rownames('id') %>%
+    setNames(c('major_localisation', 'proportion'))
+  })
+
+table(major_loc_dmso$gene$major_localisation)
+table(major_loc_dmso$transcript$major_localisation)
+```
+
+Pivot major localisation into wide format
+```{r}
+major_loc_dmso_wide <- major_loc_dmso %>% lapply(function(x){
+  x %>% mutate('present'=1) %>% dplyr::select(-proportion) %>%
+    tibble::rownames_to_column('id') %>%
+    pivot_wider(id_cols=id, names_from=major_localisation, values_from=present) %>%
+    replace(is.na(.), 0) %>%
+    tibble::column_to_rownames('id')
+})
+```
+
+First, let's consider some simple features like the length and localisation prior to stress (mem vs cyt). We'll use the average localisations for this
+```{r}
+
+granule_relocalisation <- proportions %>% names() %>% lapply(function(level){
+  
+  proportions[[level]] %>%
+    dplyr::select(id, condition, Granule, Signal_TM, uniprot_signal_tm, conservative_signal_tm) %>%
+    pivot_wider(names_from=condition, values_from=Granule) %>%
+    filter(is.finite(DMSO), is.finite(Tg)) %>%
+    mutate(diff=Tg-DMSO) %>%
+    merge(rna_lengths[[level]], by.x='id', by.y='row.names', all.x=TRUE) %>%
+    merge(major_loc_dmso[[level]], by.x='id', by.y='row.names', all.x=TRUE)
+})
+
+
+names(granule_relocalisation) <- names(proportions)
+```
+
+```{r}
+
+
+plot_length_vs_granule_reloc <- function(obj){
+  obj %>%
+    filter(major_localisation %in% c('Cytosol', 'Membrane', 'Nucleus')) %>%
+    mutate(major_localisation=factor(major_localisation, levels=c('Nucleus', 'Cytosol', 'Membrane'))) %>%
+    ggplot(aes(binned_length, diff, colour=major_localisation)) +
+    geom_hline(yintercept=0, linetype=2, colour='grey80') +
+    geom_boxplot(outlier.size=0.1, notch=TRUE) +
+    theme_camprot(base_size=15, base_family='sans', border=FALSE) +
+    scale_colour_manual(values=c('grey50', get_cat_palette(2)), name='Loc. in Control') +
+    theme(axis.text.x=element_blank(),
+          axis.ticks=element_blank()) +
+    xlab('\nTranscript length (nt)') +
+    ylab('Granule proportion\n(UPR - Control)')
+}
+
+p <- granule_relocalisation$transcript %>%
+  mutate(binned_length=Hmisc::cut2(transcript_length, g=6)) %>%
+  plot_length_vs_granule_reloc()
+
+print(p)
+
+range <- granule_relocalisation$transcript %>%
+  filter(major_localisation %in% c('Cytosol', 'Membrane', 'Nucleus')) %>%
+  pull(diff)
+
+range <- range[is.finite(range)]
+
+range_range <- max(range)-min(range)
+tri_min <- max(range) - (range_range*1.15)
+tri_max <- max(range) - (range_range*1.1)
+  
+p2 <- p +
+  xlab('\n\n\n') +
+  annotate(geom='polygon', x=c(1,6,6,1), y=c(tri_min, tri_min, tri_max, tri_min), fill='grey40')  +
+  annotate(geom='text', x=3.5, y=(max(range) - (range_range*1.2)), label='Transcript length', size=5, vjust=0.5) +
+  coord_cartesian(ylim=c(min(range), max(range)), clip = 'off')
+
+print(p2)
+
+ggsave('../../../../../5_manuscript_figures/Figure_5/features_granules/length_loc.png', p2, width=5, height=3.5)
+ggsave('../../../../../5_manuscript_figures/Figure_5/features_granules/length_loc.pdf', p2, width=5, height=3.5)
+
+granule_relocalisation$gene %>%
+  filter(is.finite(weighted_mean_length)) %>%
+  mutate(binned_length=Hmisc::cut2(weighted_mean_length, g=6)) %>%
+  plot_length_vs_granule_reloc()
+
+```
+OK, so a clear relationship between RNA length and relocalisation to granule.
+
+
+
+
+
+Next, let's add in the TM/Signal annotations
+```{r}
+plot_length_vs_granule_reloc <- function(obj){
+  obj %>%
+    filter(major_localisation %in% c('Cytosol', 'Membrane')) %>%
+    filter(!is.na(Signal_TM)) %>%
+    ggplot(aes(binned_length, diff, colour=Signal_TM)) +
+    geom_hline(yintercept=0, linetype=2, colour='grey80') +
+    #geom_quasirandom(aes(group=Signal_TM), dodge.width=0.75, size=0.5) +
+    geom_boxplot(outlier.size=0.1) +
+    theme_camprot() +
+    scale_colour_manual(values=c('grey20', get_cat_palette(3)), name='Loc. in DMSO') +
+    theme(axis.text.x=element_text(angle=45, vjust=1, hjust=1)) +
+    xlab('Transcript length (nt)') +
+    ylab('Granule proportion\n(Tg - DMSO)') 
+}
+p <- granule_relocalisation$transcript %>%
+  mutate(binned_length=Hmisc::cut2(transcript_length, g=6)) %>%
+  plot_length_vs_granule_reloc()
+print(p + facet_wrap(~major_localisation))
+print(p + facet_wrap(~(ifelse(conservative_signal_tm, 'Signal/TM', 'No Signal/TM'))) + aes(colour=major_localisation))
+
+p <- granule_relocalisation$gene %>%
+  filter(is.finite(weighted_mean_length)) %>%
+  mutate(binned_length=Hmisc::cut2(weighted_mean_length, g=6)) %>%
+  plot_length_vs_granule_reloc()
+print(p + facet_wrap(~major_localisation))
+print(p + facet_wrap(~(ifelse(conservative_signal_tm, 'Signal/TM', 'No Signal/TM'))) + aes(colour=major_localisation))
+
+```
+OK, so no real strong relationship between annotated signal/TM and granule relocalisation. If anything, signal/TM in shorter transcripts is predictive of more relocalisation to granules.
+
+```{r}
+go_human <- readRDS('../../../../../1_external/10_GO/all_go_genes_expanded.rds')
+er_ga_genes <- go_human %>%
+  filter(go_id %in% c('GO:0005794','GO:0005783')) %>%
+  pull(ensembl_gene_id) %>%
+  unique()
+length(er_ga_genes)
+```
+```{r}
+
+
+to_plot <- granule_relocalisation$transcript %>%
+  filter(ensembl_gene_id %in% er_ga_genes) %>%
+  mutate(binned_length=Hmisc::cut2(transcript_length, g=6))
+
+p <- plot_length_vs_granule_reloc(to_plot)
+
+print(p +
+        facet_wrap(~(ifelse(conservative_signal_tm, 'Signal/TM', 'No Signal/TM'))) + aes(colour=major_localisation))
+
+```
+
+
+
+
+Next step is to add the eCLIP data
+
+```{r}
+eCLIP_wide <- readRDS('../../../../../1_external/1_ENCORE_eCLIP/out/eCLIP_wide.rds')
+eCLIP_wide %>% lapply(dim)
+```
+Restrict to proteins with at least 100 bound targets
+```{r}
+
+eCLIP_to_model <- granule_relocalisation %>%
+  names() %>%
+  lapply(function(level){
+    
+    eclip_data <- eCLIP_wide[[level]][,colSums(eCLIP_wide[[level]])>100]
+    eclip_data <- eclip_data[rowSums(eclip_data)>0,]
+  
+    to_model <- granule_relocalisation[[level]] %>%
+      merge(eclip_data, by.x='id', by.y='row.names', all.x=TRUE) %>%
+      merge(major_loc_dmso_wide[[level]], by.x='id', by.y='row.names', all.x=TRUE)
+    
+    to_model[,colnames(eclip_data)][is.na(to_model[,colnames(eclip_data)])] <- 0
+    
+    return(to_model)
+  })
+
+names(eCLIP_to_model) <- names(granule_relocalisation)
+lapply(eCLIP_to_model, dim)
+```
+
+
+The final step is to add the sequence features and run this as one penalised regression and do a train, test split so we can assess accuracy of prediction. We'll gather the features here and perform the regression in the next notebook.
+
+In addition to the above, we will also add IRES and uORF annotations and lengths for 5' and 3' UTRs
+
+We need the transcript sequences. We will only model at the transcript level given sequence features don't really makes sense at the gene level.
+```{r}
+
+ensembl <- useEnsembl(biomart="ensembl", version=102, dataset="hsapiens_gene_ensembl")
+
+transcript_seq <- getBM(attributes=c('cdna', 'ensembl_transcript_id'), mart=ensembl, filters='ensembl_transcript_id',
+                    values=unique(proportions$transcript$id))
+
+print(dim(transcript_seq))
+transcript_seq <- transcript_seq %>% unique()
+print(dim(transcript_seq))
+```
+
+
+
+```{r}
+utr5_seq <- getBM(attributes=c('5utr', 'ensembl_transcript_id'), mart=ensembl, filters='ensembl_transcript_id',
+                    values=unique(proportions$transcript$id))
+
+utr3_seq <- getBM(attributes=c('3utr', 'ensembl_transcript_id'), mart=ensembl, filters='ensembl_transcript_id',
+                    values=unique(proportions$transcript$id))
+
+coding_seq <- getBM(attributes=c('coding', 'ensembl_transcript_id'), mart=ensembl, filters='ensembl_transcript_id',
+                    values=unique(proportions$transcript$id))
+ 
+transcript_region_seq <- list('utr5'=utr5_seq, 'utr3'=utr3_seq, 'coding'=coding_seq)
+```
+
+
+
+```{r}
+utr5_length <- utr5_seq %>%
+  mutate(utr5_length=log10(nchar(`5utr`))) %>%
+  dplyr::select(utr5_length, ensembl_transcript_id)
+
+plot(density(utr5_length$utr5_length))
+
+utr3_length <- utr3_seq %>%
+  mutate(utr3_length=log10(nchar(`3utr`))) %>%
+  dplyr::select(utr3_length, ensembl_transcript_id)
+
+plot(density(utr3_length$utr3_length))
+
+coding_length <- coding_seq %>%
+  mutate(coding_length=log10(nchar(`coding`))) %>%
+  dplyr::select(coding_length, ensembl_transcript_id)
+
+plot(density(coding_length$coding_length))
+
+```
+
+Obtain kmers for each RNA region.
+```{r}
+min_k <- 1
+max_k <- 6
+
+kmers_per_region <- transcript_region_seq %>% names() %>% lapply(function(name){
+  
+  region_seq <- transcript_region_seq[[name]]
+  region_with_seq <- region_seq[region_seq[,1]!="Sequence unavailable",]
+  
+  region_rnaseq <- region_with_seq[,1] %>%
+    gsub(pattern='T', replacement='U') %>%
+    Biostrings::RNAStringSet()
+  
+  
+  kmers <- lapply(seq(min_k, max_k), function(k){
+    print(k)
+    # as.prob=TRUE so this is frequency rather than count
+    Biostrings::oligonucleotideFrequency(region_rnaseq, width=k, as.prob=TRUE) %>%
+      data.frame()
+  })
+  
+  kmers <- bind_cols(kmers)
+  kmers$AU_content <- kmers$A+kmers$U
+  colnames(kmers) <- paste(name, colnames(kmers), sep='.')
+  rownames(kmers) <- region_with_seq$ensembl_transcript_id
+  
+  return(kmers)
+})
+
+constant_transcripts <- intersect(intersect(rownames(kmers_per_region[[1]]),
+                                            rownames(kmers_per_region[[2]])),
+                                                     rownames(kmers_per_region[[3]]))
+
+length(constant_transcripts)
+kmers_per_region <- kmers_per_region %>% lapply(function(x) x[constant_transcripts,]) %>% bind_cols()
+dim(kmers_per_region)
+```
+codon usage
+```{r}
+region_seq <- transcript_region_seq$coding
+region_with_seq <- region_seq[region_seq[,1]!="Sequence unavailable",]
+
+region_rnaseq <- region_with_seq[,1] %>%
+  gsub(pattern='T', replacement='U') %>%
+  Biostrings::RNAStringSet()
+
+
+codon_kmers <- Biostrings::oligonucleotideFrequency(region_rnaseq, width=3, step=3, as.prob=TRUE) %>%
+    data.frame()
+
+colnames(codon_kmers) <- paste0('codon_', colnames(codon_kmers))
+rownames(codon_kmers) <- region_with_seq$ensembl_transcript_id
+
+```
+
+codon dinuc and final nuc (wobble position)
+```{r}
+region_seq <- transcript_region_seq$coding
+region_with_seq <- region_seq[region_seq[,1]!="Sequence unavailable",]
+
+region_rnaseq <- region_with_seq[,1] %>%
+  gsub(pattern='T', replacement='U') %>%
+  sapply(function(x) substr(x, 3, nchar(x))) %>%
+  Biostrings::RNAStringSet()
+
+codon_wobble <- Biostrings::oligonucleotideFrequency(region_rnaseq, width=1, step=3, as.prob=TRUE) %>%
+    data.frame()
+
+colnames(codon_wobble) <- paste0('wobble_', colnames(codon_wobble))
+rownames(codon_wobble) <- region_with_seq$ensembl_transcript_id
+
+```
+
+```{r}
+region_seq <- transcript_region_seq$coding
+region_with_seq <- region_seq[region_seq[,1]!="Sequence unavailable",]
+
+region_rnaseq <- region_with_seq[,1] %>%
+  gsub(pattern='T', replacement='U') %>%
+  sapply(function(x) substr(x, 2, nchar(x))) %>%
+  Biostrings::RNAStringSet()
+
+codon_dinuc <- Biostrings::oligonucleotideFrequency(region_rnaseq, width=2, step=3, as.prob=TRUE) %>%
+    data.frame()
+
+colnames(codon_dinuc) <- paste0('codondinuc_', colnames(codon_dinuc))
+rownames(codon_dinuc) <- region_with_seq$ensembl_transcript_id
+
+```
+
+
+Codon optimality. Here, we use MILC as our metric and compute vs all transcript and vs top 1% most abundant (by TPM)
+```{r}
+
+region_seq <- transcript_region_seq$coding
+region_with_seq <- region_seq[region_seq[,1]!="Sequence unavailable",]
+
+region_rnaseq <- region_with_seq[,1] %>%
+  Biostrings::DNAStringSet()
+
+names(region_rnaseq) <- region_with_seq$ensembl_transcript_id
+
+abundant_tx <- tx_mean_exprs %>% arrange(desc(TPM)) %>% head(nrow(tx_mean_exprs)*0.01) %>% row.names()
+
+ct <- suppressWarnings(codonTable(region_rnaseq))
+
+ct_abundant <- suppressWarnings(codonTable(region_rnaseq[intersect(abundant_tx,
+                                                                   region_with_seq$ensembl_transcript_id),]))
+
+milc <- MILC(ct, subsets=list('abundant'=ct_abundant))
+colnames(milc) <- c('milc_all', 'milc_abundant')
+
+plot(milc) # very highly correlated as we would expect
+head(milc)
+rownames(milc) <- region_with_seq$ensembl_transcript_id
+
+```
+5' AUG in/out of frame
+```{r}
+region_seq <- transcript_region_seq$utr5
+region_with_seq <- region_seq[region_seq[,1]!="Sequence unavailable",]
+
+region_rnaseq_rev <- region_with_seq[,1] %>%
+  lapply(function(x) rev(x)) %>%
+  gsub(pattern='T', replacement='U') %>%
+  Biostrings::RNAStringSet() %>%
+  Biostrings::reverse()
+
+rev_in_frame_5_utr_codons <- Biostrings::oligonucleotideFrequency(region_rnaseq_rev, width=3, step=3, as.prob=TRUE) %>%
+    data.frame()
+
+in_frame_start <- rev_in_frame_5_utr_codons[,'GUA',drop=FALSE] %>%
+  setNames('inframe_AUG')
+
+rev_all_frame_5_utr_codons <- Biostrings::oligonucleotideFrequency(region_rnaseq_rev, width=3, as.prob=TRUE) %>%
+    data.frame()
+
+all_frame_start <- rev_all_frame_5_utr_codons[,'GUA',drop=FALSE] %>%
+  setNames('allframe_AUG')
+
+
+AUG_frames <- bind_cols(in_frame_start, all_frame_start) %>%
+  mutate(outframe_AUG=allframe_AUG-(inframe_AUG/3)) %>%
+  dplyr::select(-allframe_AUG)
+
+rownames(AUG_frames) <- region_with_seq$ensembl_transcript_id
+plot(density(AUG_frames$inframe_AUG))
+plot(density(AUG_frames$outframe_AUG))
+
+```
+Merge together the sequence features.
+```{r}
+dim(codon_dinuc)
+dim(codon_wobble)
+dim(codon_kmers)
+dim(AUG_frames)
+dim(kmers_per_region)
+
+
+
+colnames(kmers_per_region)[grepl('codon', colnames(kmers_per_region))]
+
+kmers_per_region <- bind_cols(kmers_per_region,
+    codon_kmers[rownames(kmers_per_region),],
+    codon_wobble[rownames(kmers_per_region),],
+    codon_dinuc[rownames(kmers_per_region),],
+    AUG_frames[rownames(kmers_per_region),])
+
+dim(kmers_per_region)
+saveRDS(codon_kmers, './out/codon_kmers.rds')
+```
+Scale the features
+```{r}
+gc()
+
+kmers_per_region <- scale(kmers_per_region)
+gc()
+```
+
+
+We also want to add predicted uORFs and IRES
+```{r}
+uORF_db <- readxl::read_excel('../../../../../1_external/8_uORF/Supplemental_Data_Tables_.xlsx', sheet=5, skip=2) %>%
+  separate(uORF_ID, into=c('ensembl_transcript_id'), remove=FALSE)
+
+uORF_transcripts <- uORF_db %>%
+  filter(type=='UTRonly', start_codon=='ATG', as.numeric(uORF_score)>5) %>%
+  pull(ensembl_transcript_id)
+
+ires_transcripts <- readRDS('../../../../../1_external/7_IRES/ires_gr_transcripts.rds') %>%
+  pull(seqnames) %>%
+  unique()
+
+```
+
+
+
+```{r}
+eclip_cols <- colnames(eCLIP_to_model$transcript)[grepl('(_HepG2|_K562)', colnames(eCLIP_to_model$transcript))]
+
+localisations <- colnames(major_loc_dmso_wide$transcript)
+
+transcript_features <- eCLIP_to_model$transcript %>%
+  filter(is.finite(uniprot_signal_tm), is.finite(conservative_signal_tm), is.finite(transcript_length)) %>%
+  mutate(transcript_length=log10(transcript_length)) %>%
+  tibble::column_to_rownames('id') %>%
+  dplyr::select(diff, 'conservative_signal_tm', 'transcript_length', eclip_cols, localisations)
+
+for(localisation in localisations){
+  for(eclip_target in eclip_cols){
+    name <- paste(localisation, eclip_target, sep=':')
+    interaction <- transcript_features[[localisation]] * transcript_features[[eclip_target]]
+    if(sum(interaction)>100){
+      transcript_features[[name]] <- interaction  
+    }
+  }
+
+}
+
+print(dim(transcript_features))
+transcript_features <- merge(transcript_features, kmers_per_region, by='row.names') %>%
+  mutate(IRES=Row.names %in% ires_transcripts,
+         uORF=Row.names %in% uORF_transcripts)
+
+print(dim(transcript_features))
+colnames(transcript_features)[grepl('length', colnames(transcript_features), ignore.case=T)]
+```
+
+Add the UTR and coding lengths, plus the interactions between localisation and length
+```{r}
+
+transcript_features <- transcript_features %>%
+  merge(utr5_length, by.x='Row.names', by.y='ensembl_transcript_id') %>%
+  merge(utr3_length, by.x='Row.names', by.y='ensembl_transcript_id') %>%
+  merge(coding_length, by.x='Row.names', by.y='ensembl_transcript_id') %>%
+  merge(milc, by.x='Row.names', by.y='row.names') %>%
+  tibble::column_to_rownames('Row.names')
+
+print(dim(transcript_features))
+
+for(localisation in localisations){
+  transcript_features[[paste0(localisation, ':transcript_length')]] <- (
+    transcript_features[[localisation]] * transcript_features$transcript_length)
+  transcript_features[[paste0(localisation, ':utr5_length')]] <- (
+    transcript_features[[localisation]] * transcript_features$utr5_length)
+  transcript_features[[paste0(localisation, ':utr3_length')]] <- (
+    transcript_features[[localisation]] * transcript_features$utr3_length)
+  transcript_features[[paste0(localisation, ':coding_length')]] <- (
+    transcript_features[[localisation]] * transcript_features$coding_length)
+}
+  
+print(dim(transcript_features))
+```
+
+Save tx features to model in next notebook.
+```{r}
+
+saveRDS(transcript_features, './out/transcript_features.rds')
+```
+

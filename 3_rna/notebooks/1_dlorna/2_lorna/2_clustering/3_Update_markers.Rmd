@@ -1,0 +1,601 @@
+---
+title: "Combine NNMF clusters and markers"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we combine the NNMF clusters and pre-defined markers to define our final
+  set of markers
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+
+```{r}
+library(tidyverse)
+library(camprotR)
+library(pRoloc)
+library(pRolocdata)
+library(pRolocExt)
+library(biomaRt)
+library(GenomicRanges)
+
+select <- dplyr::select
+```
+
+Read in transcript and gene-level data
+```{r}
+all_datasets <- readRDS('../2_data_processing/out/all_datasets.rds')
+```
+
+Update markers using NNMF results. First we consider only those RNAs which were pre-defined as markers and found in the assoicated NNMF cluster for the correct localisation
+```{r}
+
+dlorna_nnmf <- readRDS('./out/dlorna_gene_nnmf.rds')
+
+nnmf_and_marker <- dlorna_nnmf$DMSO$uncorrected %>%
+  fData() %>%
+  select(markers, allocation, allocation.prob) %>%
+  filter(markers!='unknown', allocation.prob>0.4) %>%
+  filter((markers=='Cytosol' & allocation=='NNMF_4') |
+           (markers=='ER' & allocation=='NNMF_5') |
+           (markers=='Mitochondrion' & allocation=='NNMF_5') |
+           (markers=='Nucleus' & allocation=='NNMF_3'))
+```
+Then we'll add high expressed snoRNA as a subcluster in NNMF_3 since these should localise to the nucleolus.
+```{r}
+
+total <- readRDS('../2_data_processing/out/gene_quant_total_res.rds')
+
+top_exp_snoRNA <- exprs(total[fData(total)$gene_biotype=='snoRNA',]) %>%
+  apply(1, FUN=function(x) mean(x, na.rm=TRUE)) %>%
+  sort(decreasing=TRUE) %>%
+  names() %>%
+  head(30)
+
+
+nnmf_3_genes <- dlorna_nnmf$DMSO$uncorrected %>%
+  fData() %>%
+  filter(allocation=='NNMF_3') %>%
+  row.names()
+
+high_exp_sno_nnmf3 <- intersect(top_exp_snoRNA, nnmf_3_genes)
+print(length(high_exp_sno_nnmf3))
+
+```
+Finally, we include the novel 'light cytosol' cluster
+```{r}
+# RNAs consistently in the 'light cytosol' cluster
+novel_cluster <- readRDS('./out/novel_cyt_cluster_members.rds')
+```
+
+```{r}
+new_markers <- nnmf_and_marker$markers
+names(new_markers) <- row.names(nnmf_and_marker)
+
+new_markers <- new_markers[setdiff(names(new_markers), high_exp_sno_nnmf3)]
+
+new_markers_lc <- rep('Cytosol_Light', length(novel_cluster))
+names(new_markers_lc) <- novel_cluster
+
+new_markers_nucleolus <- rep('Nucleolus', length(high_exp_sno_nnmf3))
+names(new_markers_nucleolus) <- high_exp_sno_nnmf3
+
+new_markers <- c(new_markers, new_markers_lc, new_markers_nucleolus)
+new_markers[new_markers=='ER'] <- 'Membrane'
+
+
+table(new_markers)
+
+```
+
+```{r}
+for(condition in names(all_datasets$gene)){
+  for(name in names(all_datasets$gene[[condition]])){
+    fData(all_datasets$gene[[condition]][[name]])$prior_markers <- fData(
+      all_datasets$gene[[condition]][[name]])$markers
+  
+    fData(all_datasets$gene[[condition]][[name]])$markers <- NULL
+    all_datasets$gene[[condition]][[name]] <- addMarkers(
+      all_datasets$gene[[condition]][[name]], new_markers)
+  }
+}
+
+
+getMarkerClasses(all_datasets$gene$DMSO$corrected)
+
+
+```
+To make new transcript-level markers, we will use prior transcript-level markers which are in the expected NNMF clusters (usingd the same gene-level clusters) as above, plus the novel cytosol light cluster and snoRNA nucleolus markers
+```{r}
+
+transcript_markers <- all_datasets$transcript$DMSO$corrected %>%
+  fData() %>%
+  select(ensembl_gene_id, transcript_biotype, markers)
+  
+new_gene_markers <- all_datasets$gene$DMSO$corrected %>%
+  fData() %>%
+  filter(markers != 'unknown') %>%
+  select(markers) 
+  
+
+new_transcript_markers <- transcript_markers %>%
+  tibble::rownames_to_column('ensembl_transcript_id') %>%
+  merge(new_gene_markers, by.x='ensembl_gene_id', by.y='row.names') %>%
+  mutate(new_markers=markers.x)
+
+table(transcript_markers$markers)
+
+new_transcript_markers$new_markers[(
+  new_transcript_markers$markers.y=='Cytosol_Light' &
+    new_transcript_markers$transcript_biotype=='protein_coding')] <- 'Cytosol_Light'
+
+new_transcript_markers$new_markers[
+  new_transcript_markers$markers.y=='Nucleolus'] <- 'Nucleolus'
+
+new_transcript_markers$new_markers[(
+  new_transcript_markers$markers.x %in% c('ER', 'Cytosol') &
+    new_transcript_markers$transcript_biotype!='protein_coding')] <- 'unknown'
+
+new_transcript_markers[new_transcript_markers=='ER'] <- 'Membrane'
+
+table(new_transcript_markers$new_markers)
+
+new_transcript_markers <- new_transcript_markers %>%
+  filter(new_markers!='unknown')
+
+new_transcript_markers <- new_transcript_markers$new_markers %>%
+  setNames(new_transcript_markers$ensembl_transcript_id)
+
+table(new_transcript_markers)
+
+
+```
+
+```{r}
+for(condition in names(all_datasets$transcript)){
+  for(name in names(all_datasets$transcript[[condition]])){
+    fData(all_datasets$transcript[[condition]][[name]])$prior_markers <- fData(
+      all_datasets$transcript[[condition]][[name]])$markers
+  
+    fData(all_datasets$transcript[[condition]][[name]])$markers <- NULL
+    all_datasets$transcript[[condition]][[name]] <- addMarkers(
+      all_datasets$transcript[[condition]][[name]], new_transcript_markers)
+  }
+}
+
+
+getMarkerClasses(all_datasets$transcript$DMSO$corrected)
+
+
+```
+
+First, let's inspect the mean marker set profiles. 
+```{r}
+#get order for Control
+.data <- all_datasets$gene$DMSO$corrected %>%
+    filterNA()
+  
+.data <- .data[rowSums(exprs(.data))>0,]
+
+.data <- .data %>%
+  normalise('sum')
+
+hc <- mrkHClust(.data, plot = FALSE)
+mm <- getMarkerClasses(.data)
+ord <- levels(factor(mm))[order.dendrogram(hc)]
+
+  
+for(level in names(all_datasets)){
+  for(condition in names(all_datasets[[level]])){
+    for(corrected in names(all_datasets[[level]][[condition]])){
+
+      .data <- all_datasets[[level]][[condition]][[corrected]]
+      
+      #colnames(.data) <- 1:10
+      hc <- mrkHClust(.data, plot = FALSE)
+      mm <- getMarkerClasses(.data)
+      
+      fmat <- mrkConsProfiles(.data)
+      
+      p <- plotConsProfiles(fmat, order = ord, plot=FALSE) +
+        scale_fill_continuous(name='Sum norm.\nintensity',
+                              low = "white", high=get_cat_palette(1)) +
+        scale_x_discrete(labels=pData(.data)$fraction) +
+        ggtitle(paste(level, condition, corrected, collapse=' - ')) +
+        theme_camprot(base_size=15) +
+        xlab('') + 
+        geom_vline(xintercept=8.5) +
+        geom_vline(xintercept=16.5)
+      
+      print(p)
+    }
+  }
+}
+
+
+```
+
+
+
+
+```{r}
+colours <- get_cat_palette(6)[c(2:3,1,6:4)]
+```
+
+
+
+
+Now, let's inspect the linear profiles in more detail
+```{r, fig.height=6, fig.width=8}
+for(level in names(all_datasets)){
+  for(condition in names(all_datasets[[level]])){
+    for(corrected in names(all_datasets[[level]][[condition]])){
+      .data <-all_datasets[[level]][[condition]][[corrected]]
+      
+      alphas <- (length(getMarkerClasses(.data)) *
+                   classWeights(.data))
+      
+      .data <- .data[fData(.data)$markers != 'unknown',]
+      
+      p <- .data %>%
+        plot_marker_profiles(facet_by='markers', group_by='replicate', alpha=alphas*2) +
+        ggtitle(paste(level, condition, corrected, collapse=' - ')) +
+        scale_x_discrete(labels=pData(.data)$fraction) +
+        theme_camprot(base_size=12) +
+        theme(axis.text.x=element_text(angle=90, vjust=0.5, hjust=1), legend.position='none') +
+        #ylim(0, 0.5) +
+        scale_colour_manual(values=colours) + 
+        geom_vline(xintercept=8.5) +
+        geom_vline(xintercept=16.5)
+      
+      print(p)
+        }
+    
+    }
+}
+
+
+```
+
+
+
+Let's identify the outliers.
+```{r}
+outliers <- NULL
+```
+
+
+For Nucleus, these have too high abundance in the last cytosol-enriched fractions, or very low abundance in fractions 5-8
+```{r}
+x <- all_datasets$gene$DMSO$corrected[
+  fData(all_datasets$gene$DMSO$corrected)$markers=='Nucleus',c(8, 16, 24)] %>%
+  exprs()
+
+print(x[rowMax(x)>0.2,,drop=FALSE])
+
+outliers$gene$nucleus <- rownames(x[rowMax(x)>0.2,,drop=FALSE])
+
+x <- all_datasets$gene$DMSO$corrected[
+  fData(all_datasets$gene$DMSO$corrected)$markers=='Nucleus',c(5:7, 13:15, 21:23)] %>%
+  exprs()
+
+outliers$gene$nucleus <- c(outliers$gene$nucleus, rownames(x[rowMin(x)<0.05,,drop=FALSE]))
+
+x <- all_datasets$transcript$DMSO$corrected[
+  fData(all_datasets$transcript$DMSO$corrected)$markers=='Nucleus',c(8, 16, 24)] %>%
+  exprs()
+
+print(x[rowMax(x)>0.2,,drop=FALSE])
+
+outliers$transcript$nucleus <- rownames(x[rowMax(x)>0.2,,drop=FALSE])
+
+x <- all_datasets$transcript$DMSO$corrected[
+  fData(all_datasets$transcript$DMSO$corrected)$markers=='Nucleus',c(5:7, 13:15, 21:23)] %>%
+  exprs()
+
+outliers$transcript$nucleus <- c(outliers$transcript$nucleus, rownames(x[rowMin(x)<0.05,,drop=FALSE]))
+
+
+```
+
+For Nucleolus, these have too high abundance in the last three cytosol-enriched fractions
+```{r}
+x <- all_datasets$gene$DMSO$corrected[
+  fData(all_datasets$gene$DMSO$corrected)$markers=='Nucleolus',c(6:8, 14:16, 22:24)] %>%
+  exprs()
+
+print(x[rowMax(x)>0.15,,drop=FALSE])
+
+outliers$gene$nucleolus <- rownames(x[rowMax(x)>0.15,,drop=FALSE])
+
+x <- all_datasets$transcript$DMSO$corrected[
+  fData(all_datasets$transcript$DMSO$corrected)$markers=='Nucleolus',c(6:8, 14:16, 22:24)] %>%
+  exprs()
+
+print(x[rowMax(x)>0.15,,drop=FALSE])
+
+outliers$transcript$nucleolus <- rownames(x[rowMax(x)>0.15,,drop=FALSE])
+
+
+
+```
+
+For Membrane, these have too high abundance in the last three cytosol-enriched fractions
+```{r}
+x <- all_datasets$gene$DMSO$corrected[
+  fData(all_datasets$gene$DMSO$corrected)$markers=='Membrane',c(6:8, 14:16, 22:24)] %>%
+  exprs()
+
+print(x[rowMax(x)>0.15,,drop=FALSE])
+
+outliers$gene$membrane <- rownames(x[rowMax(x)>0.15,,drop=FALSE])
+
+x <- all_datasets$transcript$DMSO$corrected[
+  fData(all_datasets$transcript$DMSO$corrected)$markers=='Membrane',c(6:8, 14:16, 22:24)] %>%
+  exprs()
+
+print(x[rowMax(x)>0.15,,drop=FALSE])
+
+outliers$transcript$membrane <- rownames(x[rowMax(x)>0.15,,drop=FALSE])
+
+x <- all_datasets$transcript$DMSO$corrected[
+  fData(all_datasets$transcript$DMSO$corrected)$markers=='Membrane',c(2, 10, 18)] %>%
+  exprs()
+
+print(x[rowMin(x)<0.2,,drop=FALSE])
+
+outliers$transcript$membrane <- c(outliers$transcript$membrane,
+                                  rownames(x[rowMin(x)<0.2,,drop=FALSE]))
+
+
+x <- all_datasets$transcript$DMSO$corrected[
+  fData(all_datasets$transcript$DMSO$corrected)$markers=='Membrane',c(4:5, 12:13, 20:21)] %>%
+  exprs()
+
+print(x[rowMax(x)>0.1,,drop=FALSE])
+
+outliers$transcript$membrane <- c(outliers$transcript$membrane,
+                                  rownames(x[rowMax(x)>0.1,,drop=FALSE]))
+
+
+```
+
+For Cytosol-Light these have zero values and noisier profiles
+
+```{r}
+
+x <- all_datasets$gene$DMSO$corrected[
+  fData(all_datasets$gene$DMSO$corrected)$markers=='Cytosol_Light',] %>%
+  exprs()
+
+outliers$gene$cytosol_light <- rownames(x[rowMin(x)==0,,drop=FALSE])
+
+x <- all_datasets$transcript$DMSO$corrected[
+  fData(all_datasets$transcript$DMSO$corrected)$markers=='Cytosol_Light',] %>%
+  exprs()
+
+outliers$transcript$cytosol_light <- rownames(x[rowMin(x)==0,,drop=FALSE])
+```
+
+```{r}
+for(level in names(all_datasets)){
+  for(condition in names(all_datasets[[level]])){
+    print(c(level, condition))
+    markers <- getMarkers(all_datasets[[level]][[condition]]$corrected)
+    print(length(markers[markers!='unknown']))
+  }
+}
+```
+
+Summarise the total number of outliers
+```{r}
+outliers %>% lapply(function(x) lapply(x, function(y) length(unique(y))))
+```
+Update markers to remove outliers (set to unknown localisation)
+```{r}
+gene_outliers <- unlist(outliers$gene) %>% unname() %>% unique()
+tx_outliers <- unlist(outliers$transcript) %>% unname() %>% unique()
+
+for(condition in names(all_datasets$gene)){
+  for(name in names(all_datasets$gene[[condition]]))
+    fData(all_datasets$gene[[condition]][[name]])$markers[
+      rownames(all_datasets$gene[[condition]][[name]]) %in% gene_outliers] <- 'unknown'
+}
+
+for(condition in names(all_datasets$transcript)){
+  for(name in names(all_datasets$transcript[[condition]]))
+    fData(all_datasets$transcript[[condition]][[name]])$markers[
+      rownames(all_datasets$transcript[[condition]][[name]]) %in% tx_outliers] <- 'unknown'
+}
+
+
+
+```
+
+
+PCA plots 
+```{r, fig.height=5, fig.width=8}
+get_var_from_axes_label <- function(axes_label){
+  as.numeric(gsub('PC.* \\(|%\\)', '', axes_label))
+}
+
+plot_PCA_LoRNA <- function(obj, dims=c(1,2)){
+    pca_proj <- make_proj(obj, dims=dims)
+    
+    x_col <- colnames(pca_proj)[1]
+    y_col <- colnames(pca_proj)[2]
+    x_var <- get_var_from_axes_label(x_col)
+    y_var <- get_var_from_axes_label(y_col)
+    
+    pca_proj <- data.frame(pca_proj)
+    
+    p <- pca_proj %>%
+      arrange(markers!='unknown') %>%
+      ggplot(aes_string(colnames(pca_proj)[1], colnames(pca_proj)[2])) +
+      geom_point(aes(colour=markers, size=markers=='unknown', alpha=markers=='unknown')) +
+      xlab(x_col) +
+      ylab(y_col) +
+      theme_camprot(base_size=15) +
+      guides(alpha=FALSE) +
+      theme(aspect.ratio=y_var/x_var) +
+      scale_colour_manual(values=c(colours, 'grey80'), name='') +
+      scale_alpha_manual(values=c(1, 0.5), guide=FALSE) +
+      scale_size_manual(values=c(1.5, 0.5), guide=FALSE)
+    
+    return(p)
+
+}
+
+for(level in names(all_datasets)){
+  for(condition in names(all_datasets[[level]])){
+    for(corrected in names(all_datasets[[level]][[condition]])){
+  
+      # if(level!='transcript'|condition!='DMSO'|corrected!='corrected'){
+      #  next()
+      # }
+      
+      .data <-all_datasets[[level]][[condition]][[corrected]]
+      
+      p <- plot_PCA_LoRNA(.data) + ggtitle(paste(level, condition, corrected, collapse=' - '))
+      print(p)
+      
+      p <- plot_PCA_LoRNA(.data, dims=c(3,4)) + ggtitle(paste(level, condition, corrected, collapse=' - '))
+      print(p)
+  
+    }
+  }
+}
+
+```
+
+
+
+```{r}
+
+saveRDS(all_datasets, './out/all_datasets_with_novel.rds')
+
+```
+
+
+Now, let's re-inspect the linear profiles in more detail
+```{r, fig.height=6, fig.width=8}
+for(level in names(all_datasets)){
+  for(condition in names(all_datasets[[level]])){
+    for(corrected in names(all_datasets[[level]][[condition]])){
+      
+      # if(level!='transcript'|condition!='DMSO'|corrected!='corrected'){
+      #  next()
+      # }
+      
+      .data <-all_datasets[[level]][[condition]][[corrected]]
+      
+      alphas <- (length(getMarkerClasses(.data)) *
+                   classWeights(.data))
+      
+      .data <- .data[fData(.data)$markers != 'unknown',]
+      
+      p <- .data %>%
+        plot_marker_profiles(facet_by='markers', group_by='replicate', alpha=alphas*2) +
+        ggtitle(paste(level, condition, corrected, collapse=' - ')) +
+        scale_x_discrete(labels=pData(.data)$fraction) +
+        theme_camprot(base_size=12) +
+        theme(axis.text.x=element_text(angle=90, vjust=0.5, hjust=1), legend.position='none') +
+        #ylim(0, 0.5) +
+        scale_colour_manual(values=colours) + 
+        geom_vline(xintercept=8.5) +
+        geom_vline(xintercept=16.5)
+      
+      print(p)
+    }
+  }
+}
+
+```
+
+
+Let's also use t-SNE to visualise the marker separation. We'll just consider corrected for now.
+
+
+```{r, eval=FALSE}
+set.seed(0)
+
+perps <- c(10, 50, 100, 200)
+
+corrected <- 'corrected'
+
+tsne_proj <- vector('list', length=4)
+names(tsne_proj) <- paste(names(all_datasets), names(all_datasets$gene), sep='-')
+             
+for(level in names(all_datasets)){
+  print(level)
+  for(condition in names(all_datasets[[level]])){
+  
+  .data <-all_datasets[[level]][[condition]][[corrected]]
+  
+  projections <- vector('list', length=length(perps))
+  
+  for(perp_ix in seq_along(perps)){
+    perp <- perps[[perp_ix]]
+    print(perp)
+    tmp_tsne_proj <- make_proj(.data, method='t-SNE', methargs = list(perplexity = perp))
+     
+     p <-  tmp_tsne_proj %>%
+        data.frame() %>%
+        arrange(markers!='unknown') %>%
+        ggplot(aes(Dimension.1, Dimension.2)) +
+        xlab('Dimension 1') +
+        ylab('Dimension 2') +
+        theme_camprot() +
+        guides(alpha=FALSE) +
+        geom_point() +
+        aes(colour=markers, alpha=markers=='unknown') +
+        scale_alpha_manual(values=c(1, 0.1)) +
+        scale_colour_manual(name='', values=c(colours, 'grey'))
+      
+     print(p)
+     
+     projections[[perp_ix]] <- tmp_tsne_proj
+     }
+   tsne_proj[[paste(level, condition, sep='-')]] <- projections
+  }
+}
+
+```
+
+
+To avoid having to recompute t-SNE in the future, we will select a singe perplexity and add the projections to the fData. We'll use perplexity==100 for both conditions for genes and transcripts.
+```{r}
+dmso_with_tsne <- all_datasets$gene$DMSO$corrected
+fData(dmso_with_tsne)[,c('Dimension 1', 'Dimension 2')] <- tsne_proj$`gene-DMSO`[[which(perps==100)]][
+  rownames(fData(dmso_with_tsne)),c('Dimension 1', 'Dimension 2')]
+
+tg_with_tsne <- all_datasets$gene$Tg$corrected
+fData(tg_with_tsne)[,c('Dimension 1', 'Dimension 2')] <- tsne_proj$`gene-Tg`[[which(perps==100)]][
+  rownames(fData(tg_with_tsne)),c('Dimension 1', 'Dimension 2')]
+
+
+dmso_with_tsne_tx <- all_datasets$transcript$DMSO$corrected
+fData(dmso_with_tsne_tx)[,c('Dimension 1', 'Dimension 2')] <- tsne_proj$`transcript-DMSO`[[which(perps==100)]][
+  rownames(fData(dmso_with_tsne_tx)),c('Dimension 1', 'Dimension 2')]
+
+tg_with_tsne_tx <- all_datasets$transcript$Tg$corrected
+fData(tg_with_tsne)[,c('Dimension 1', 'Dimension 2')] <- tsne_proj$`transcript-Tg`[[which(perps==100)]][
+  rownames(fData(tg_with_tsne)),c('Dimension 1', 'Dimension 2')]
+```
+
+```{r}
+saveRDS(dmso_with_tsne, './out/dmso_with_tsne.rds')
+saveRDS(tg_with_tsne, './out/tg_with_tsne.rds')
+saveRDS(dmso_with_tsne_tx, './out/dmso_with_tsne_tx.rds')
+saveRDS(tg_with_tsne_tx, './out/tg_with_tsne_tx.rds')
+```
+
+
+
+
+

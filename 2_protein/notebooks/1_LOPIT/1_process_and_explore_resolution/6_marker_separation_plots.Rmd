@@ -1,0 +1,367 @@
+---
+title: "Inspect the nuclear protein profiles"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we plot the final marker sets.
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+```{r}
+library(tidyverse)
+library(camprotR)
+library(pRoloc)
+library(pRolocdata)
+library(pRolocExt)
+library(gplots)
+```
+Read in the protein quantification with the finalised markers sets
+```{r}
+combined_protein_res <- readRDS('../../results/combined_protein_res_finalised_markers.rds')
+```
+
+
+
+```{r, fig.height=4, fig.width=10}
+
+
+dmso_e <- combined_protein_res$DMSO %>% filterNA() %>% exprs()
+labs <- rep(1:8, 3)
+
+colours=get_cat_palette(5)[3:5]
+
+clust <-  dmso_e %>% dist() %>% hclust()
+
+png('../../results/protein_clust.png', width=200, height=80, units='mm', res=500)
+heatmap.2(dmso_e,
+          dendrogram='row', Colv=FALSE, trace='none', labRow=FALSE, Rowv=clust$order,
+          labCol='',
+          density.info='none',
+          key.title=NA,
+          key.xlab='Normalised abundance',
+          key.ylab='X',
+          xlab=NA,
+          breaks=seq(0, 1, length.out=101), 
+          col=colorRampPalette(c('grey95', get_cat_palette(2)[2]))(n = 100),
+          lhei=c(0.1, 1),
+          lwid=c(0.3, 1),
+          key=FALSE,
+          #keysize=0.05,
+          #key.par=list(cex=0.5),
+          add.expr = text(x = seq_along(labs), y = -100, cex=1,
+                          col=c(rep(colours[1], 8), rep(colours[2], 8), rep(colours[3], 8)),
+                          labels = labs, xpd = TRUE),
+          key.xtickfun=function() {
+                 breaks <- parent.frame()$breaks
+                 return(list(
+                      at=parent.frame()$scale01(c(breaks[1],
+                                                  breaks[51],
+                                                  breaks[101])),
+                      labels=c(as.character(breaks[1]),
+                               as.character(breaks[51]),
+                               as.character(breaks[101]))
+                      ))
+           })
+
+dev.off()
+```
+
+
+First, let's inspect the mean marker set profiles. 
+```{r}
+for(markers in c('markers', 'markers')){
+  
+  
+  #get order for Control
+  .data <- combined_protein_res$DMSO %>%
+    filterNA()
+  
+  .data <- .data %>%
+  normalise('sum')
+  
+  hc <- mrkHClust(.data, plot = FALSE, fcol=markers)
+  mm <- getMarkerClasses(.data, fcol=markers)
+  ord <- levels(factor(mm))[order.dendrogram(hc)]
+  
+
+  for(condition in names(combined_protein_res)){
+    
+    .data <- combined_protein_res[[condition]]  %>% filterNA()
+    
+    #colnames(.data) <- 1:10
+    hc <- mrkHClust(.data, plot = FALSE, fcol=markers)
+    mm <- getMarkerClasses(.data, fcol=markers)
+    
+    fmat <- mrkConsProfiles(.data, fcol=markers)
+    
+    p <- plotConsProfiles(fmat, order = ord, plot=FALSE) +
+      scale_fill_continuous(name='Sum norm.\nintensity',
+                            low = "white", high=get_cat_palette(1),
+                            limits=c(0,1),
+                            breaks=seq(0,1,0.2)) +
+      scale_x_discrete(labels=pData(.data)$fraction) +
+      ggtitle(condition) +
+      theme_camprot(base_size=15) +
+      geom_vline(xintercept=8.5) +
+      geom_vline(xintercept=16.5) +
+      theme(axis.text.x=element_text(angle=45, hjust=1, vjust=1)) +
+      xlab('')
+    
+    print(p)    
+  }
+  
+
+}
+
+```
+
+PCAs and linear marker plots
+```{r, fig.height=7, fig.width=7}
+
+colours <- getStockcol()
+
+for(condition in names(combined_protein_res)){
+  
+  if(condition=='Control'){
+    position='topleft'
+  }
+  else{ position = 'bottomleft'
+  }
+  
+  .data <- combined_protein_res[[condition]]
+
+  .data %>% plot2D(col=colours, fcol='markers')
+  addLegend(.data, col=colours, where=position, fcol='markers')
+  
+  .data %>% plot2D(col=colours, dims=c(3,4), fcol='markers')
+  addLegend(.data, col=colours, where=position, fcol='markers')
+  
+  .data %>% plot2D(col=colours, dims=c(2,3), fcol='markers')
+  addLegend(.data, col=colours, where=position, fcol='markers')
+  
+  #.data %>% plot2D(col=colours, method='kpca', fcol='markers')
+  #addLegend(.data, col=colours, where=position, fcol='markers')
+  
+  .data <- .data[fData(.data)$markers!='unknown',]
+
+  alphas <- length(getMarkerClasses(.data, fcol='markers')) * classWeights(.data, fcol='markers')
+  
+  p <- .data %>%
+    plot_marker_profiles(facet_by='markers', group_by='replicate', alpha=alphas, fcol='markers') +
+    ggtitle(condition) +
+    scale_x_discrete(labels=pData(.data)$fraction) +
+    theme_camprot(base_size=12) +
+    theme(axis.text.x=element_text(angle=90, vjust=0.5, hjust=1), legend.position='none') +
+    geom_vline(xintercept=8.5, linetype=2, lwd=0.25) +
+    geom_vline(xintercept=16.5, linetype=2, lwd=0.25) +
+    scale_colour_manual(values=colours)
+
+  print(p)
+  
+}
+
+
+
+
+```
+
+Linear profiles
+```{r}
+obj <- combined_protein_res$DMSO %>% filterNA()
+obj <- obj[fData(obj)$markers!='unknown']
+
+exprs_df <- exprs(obj)
+f_df <- fData(obj) %>% dplyr::select(markers)
+exprs_df <- exprs_df %>% data.frame()
+new_colnames2old_colnames <- data.frame(new = colnames(exprs_df), 
+    old = colnames(exprs(obj)))
+
+exprs_df <- exprs_df %>% tibble::rownames_to_column("id") %>% 
+    tidyr::pivot_longer(-id, names_to = "sample", values_to = "abundance") %>% 
+    merge(new_colnames2old_colnames, by.x = "sample", by.y = "new") %>% 
+    mutate(sample = factor(camprotR::remove_x(old), levels = colnames(obj)))
+exprs_df <- merge(exprs_df, f_df, by.x = "id", by.y = "row.names") %>% 
+    merge(pData(obj), by.x = "sample", by.y = "row.names")
+
+summaried_exprs_df <- exprs_df %>%
+  mutate(markers=recode(Hmisc::capitalize(tolower(markers)), 'Er'='ER', 'Pm'='PM')) %>%
+  group_by(fraction, markers, replicate) %>%
+  summarise('mean'=mean(abundance),  'sd'=sd(abundance))
+
+p <- summaried_exprs_df %>%
+  filter(replicate==1) %>%
+  ggplot(aes(as.numeric(fraction), colour=markers, fill=markers)) +
+  geom_line(aes(y=mean)) +
+  geom_ribbon(aes(ymax=mean+(2*sd), ymin=mean-(2*sd)), alpha=0.5, colour=NA) +
+  theme_camprot(border=FALSE, base_size=15, base_family='sans') +
+  scale_colour_manual(values=colours, guide=FALSE) +
+  scale_fill_manual(values=colours, guide=FALSE) +
+  scale_x_continuous(breaks=1:8, name='Fraction') +
+  ylab('Abundance\n(sum normalised)')
+
+print(p)
+
+
+p <- summaried_exprs_df %>%
+  filter(replicate==1) %>%
+  ggplot(aes(as.numeric(fraction), colour=markers, fill=markers)) +
+  geom_line(aes(y=mean)) +
+  geom_ribbon(aes(ymax=mean+2*sd, ymin=mean-2*sd), alpha=0.5, colour=NA) +
+  facet_wrap(~markers, ncol=2) +
+  theme_camprot(border=FALSE, base_size=10, base_family='sans') +
+  scale_fill_manual(values=colours, guide=FALSE) +
+  scale_colour_manual(values=colours, name='') +
+  theme(strip.text=element_blank(),
+        strip.background=element_blank()) +
+  scale_x_continuous(breaks=1:8, name='Fraction') +
+  scale_y_continuous(breaks=seq(0,1,0.5), name='Abundance (sum normalised)')
+
+print(p)
+ggsave('../../../../5_manuscript_figures/Figure_1/protein_profiles/linear.png', height=4, width=4)
+ggsave('../../../../5_manuscript_figures/Figure_1/protein_profiles/linear.pdf', height=4, width=4)
+
+
+p <- summaried_exprs_df %>%
+  ggplot(aes(as.numeric(fraction), colour=markers, fill=markers)) +
+  geom_line(aes(y=mean)) +
+  facet_wrap(~replicate, nrow=1) +
+  theme_camprot(border=FALSE, base_size=15, base_family='sans') +
+  scale_colour_manual(values=colours, name='') +
+  theme(strip.text=element_blank(),
+        strip.background=element_blank()) +
+  scale_x_continuous(breaks=1:8, name='Fraction') +
+  ylab('Abundance\n(sum normalised)')
+
+print(p)
+
+ggsave('../../../../5_manuscript_figures/Figure_1/protein_profiles/linear_all.png', height=3, width=7)
+ggsave('../../../../5_manuscript_figures/Figure_1/protein_profiles/linear_all.pdf', height=3, width=7)
+
+```
+
+
+```{r}
+colours <- getStockcol()
+
+for(condition in names(combined_protein_res)){
+  
+  if(condition=='Control'){
+    position='topleft'
+  }
+  else{ position = 'bottomleft'
+  }
+  
+  .data <- combined_protein_res[[condition]]
+
+  .data <- .data[fData(.data)$markers!='unknown',]
+
+  p <- .data %>%
+    plot_marker_profiles(group_by='replicate', plot_all=FALSE, fcol='markers') +
+    ggtitle(condition) +
+    scale_x_discrete(labels=pData(.data)$fraction) +
+    theme_camprot(base_size=15) +
+    #theme(axis.text.x=element_text(angle=90, vjust=0.5, hjust=1), legend.position='none') +
+    geom_vline(xintercept=8.5, linetype=2, lwd=0.25) +
+    geom_vline(xintercept=16.5, linetype=2, lwd=0.25) +
+    scale_colour_manual(values=colours)
+
+  print(p)
+}
+
+```
+OK, too busy for this sort of representation to work. Let's just use the t-SNE (see bottom of notebook)
+
+
+
+
+
+Kernal PCAs
+```{r, fig.height=6, fig.width=6}
+for(condition in names(combined_protein_res)){
+  pdf(sprintf('../../../../5_manuscript_figures/Figure_1/protein_profiles/kernal_pca_%s.pdf', condition),
+      height=5, width=5)
+  combined_protein_res[[condition]] %>% plot2D(main = paste(condition, ' - ', "Kernal PCA"),
+                                               grid=FALSE, method='kpca', col=colours, fcol='markers')
+  dev.off()
+}
+```
+
+
+```{r, fig.height=10, fig.width=10, eval=FALSE}
+
+perps <- c(5, 10, 25, 50)
+
+for(condition in names(combined_protein_res)){
+  
+    par(mfrow = c(3, 2))
+    combined_protein_res[[condition]] %>% plot2D(main = paste(condition, ' - ', "PCA"), col=colours, fcol='markers')
+    
+    sapply(perps,
+           function(perp) {
+             combined_protein_res[[condition]] %>% normalise('sum') %>%
+               plot2D(method = "t-SNE", methargs = list(perplexity = perp), col=colours, fcol='markers')
+             title(main = paste(condition, ' - ', "t-SNE, perplexity", perp))
+           })
+}
+
+```
+
+
+To avoid having to recompute t-SNE in the future, we will select a singe perplexity and add the projections to the fData. We'll use perplexity==25 for both conditions
+```{r}
+set.seed(0)
+perp <- 25
+
+
+combined_protein_res_with_tsne <- combined_protein_res %>% lapply(function(x){
+  
+  tsne_proj <- make_proj(x, method='t-SNE', methargs = list(perplexity = perp))
+  
+  fData(x)[,c('Dimension 1', 'Dimension 2')] <- tsne_proj[
+    rownames(fData(x)),c('Dimension 1', 'Dimension 2')]
+  
+  return(x)
+
+})
+```
+
+
+```{r}
+combined_protein_res_with_tsne %>% names() %>% sapply(function(condition){
+  p <-combined_protein_res_with_tsne[[condition]] %>%
+    fData() %>%
+    data.frame() %>%
+    arrange(markers!='unknown') %>%
+    mutate(markers=Hmisc::capitalize(tolower(markers))) %>%
+    mutate(markers=recode(markers, 'Pm'='PM', 'Er'='ER')) %>%
+    ggplot(aes(Dimension.1, Dimension.2)) +
+    xlab('Dimension 1') +
+    ylab('Dimension 2') +
+    theme_camprot(border=FALSE, base_size=15, base_family='sans') +
+    guides(alpha=FALSE, size=FALSE) +
+    geom_point() +
+    aes(colour=markers, alpha=markers=='Unknown', size=markers=='Unknown') +
+    scale_alpha_manual(values=c(1, 0.25)) +
+    scale_size_manual(values=c(1, 0.5)) +
+    scale_colour_manual(name='', values=c(colours[1:12], 'grey80'))
+  
+  print(p)
+  
+  ggsave(sprintf('../../../../5_manuscript_figures/Figure_1/protein_profiles/%s_tsne.png', condition))
+  ggsave(sprintf('../../../../5_manuscript_figures/Figure_1/protein_profiles/%s_tsne.pdf', condition))
+
+})
+```
+
+```{r}
+saveRDS(combined_protein_res_with_tsne, '../../results/combined_protein_res_with_tsne.rds')
+```
+
+
+

@@ -1,0 +1,543 @@
+---
+title: "Inspect the nuclear protein profiles"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we further explore the separation of nuclear proteins using the COMPARTMENTS database.
+  From this, we define 3 new marker sets for the nucleus
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+Load libraries
+```{r}
+library(tidyverse)
+library(camprotR)
+library(pRoloc)
+library(pRolocdata)
+library(pRolocExt)
+library(biomaRt)
+```
+
+Read in the GO annotations
+```{r}
+human_go <- readRDS('../../../shared_files/h_sapiens_go_full.rds')
+```
+
+
+Set standard colours for plots
+```{r}
+colours <- c(getStockcol()[c(1:4,8,5,7,10,13,8)], 'grey20', 'grey60')
+
+```
+
+Read in the MSnSets with updated markers following manual curation of existing marker sets
+```{r}
+combined_protein_res_updated_markers <- readRDS('../../out/combined_protein_res_updated_markers.rds')
+```
+
+
+We need to define the set of proteins with a single localisation according to COMPARTMENTS. Here, we will only use COMPARTMENTS to define nucleus markers, with no chromatin sub-category.
+
+```{r}
+# Read in COMPARTMENTS database
+compartments <- read.delim('../../../shared_files/human_compartment_integrated_full.tsv.gz',
+                           header=FALSE,
+                           col.names=c('ensembl_peptide_id', 'ensembl_name', 'GO', 'Localisation', 'score'),
+                           stringsAsFactors=FALSE)
+
+# The IDs in the COMPARTMENTS database are from Ensembl. We need to map these to Uniprot IDs
+ensembl <- useEnsembl(biomart="ensembl", version=102, dataset="hsapiens_gene_ensembl")
+
+all_ensembl_proteins_plus_up <- getBM(attributes=c(
+  'ensembl_peptide_id', 'ensembl_gene_id', 'uniprotswissprot'),
+  mart = ensembl)
+
+marker2GO <- NULL
+
+marker2GO['Cytosol'] <- 'GO:0005829'
+marker2GO['Endoplasmic Reticulum'] <- 'GO:0005783'
+marker2GO['Golgi Apparatus'] <- 'GO:0005794'
+marker2GO['Lysosome'] <- 'GO:0005764'
+marker2GO['Mitochondria'] <- 'GO:0005739'
+marker2GO['Nucleus'] <- 'GO:0005634'
+marker2GO['Peroxisome'] <- 'GO:0005777'
+marker2GO['Proteasome'] <- 'GO:0000502'
+marker2GO['Plasma membrane'] <- 'GO:0005886'
+marker2GO['Ribosome'] <- 'GO:0005840'
+
+# need map in the other direction too
+GO2marker <- names(marker2GO)
+names(GO2marker) <- marker2GO
+
+compartments_annot <- compartments %>% filter(GO %in% marker2GO) %>% rowwise() %>% mutate('marker_class'=GO2marker[GO])
+print(table(compartments_annot$marker_class))
+
+compartments_annot_up <- compartments_annot %>% merge(all_ensembl_proteins_plus_up, by='ensembl_peptide_id')
+
+# we need to remove proteins with multiple mappings between ensembl peptide ID and uniprot ID
+multi_ens <- compartments_annot_up %>%
+  dplyr::select(ensembl_peptide_id, uniprotswissprot) %>%
+  unique() %>%
+  group_by(ensembl_peptide_id) %>%
+  tally() %>%
+  filter(n>1) %>%
+  pull(ensembl_peptide_id)
+
+multi_up <- compartments_annot_up %>%
+  dplyr::select(ensembl_peptide_id, uniprotswissprot) %>%
+  unique() %>%
+  group_by(uniprotswissprot) %>%
+  tally() %>%
+  filter(n>1) %>%
+  pull(uniprotswissprot)
+
+compartments_annot_up_flt <- compartments_annot_up %>%
+  filter(! ensembl_peptide_id %in% multi_ens, ! uniprotswissprot %in% multi_up)
+
+# Identify the proteins with a COMPARTMENTS score of 5 for one localisation and no other score > 2.
+confident_compartments <- compartments_annot_up_flt %>%
+  filter(GO %in% marker2GO) %>%
+  filter(score==5) %>% pull(ensembl_peptide_id)
+
+confident_single <- compartments_annot_up_flt %>%
+  filter(GO %in% marker2GO) %>%
+  filter(ensembl_peptide_id %in% confident_compartments) %>%
+  filter(score>2) %>%
+  group_by(uniprotswissprot) %>%
+  tally() %>%
+  filter(n==1) %>%
+  pull(uniprotswissprot)
+
+compartment_markers <- compartments_annot_up_flt %>%
+  filter(GO %in% marker2GO,
+         uniprotswissprot %in% confident_single,
+         score==5)
+
+compartment_markers_list <- compartment_markers$marker_class
+names(compartment_markers_list) <- compartment_markers$uniprotswissprot
+
+saveRDS(compartment_markers_list, '../../results/COMPARTMENTS_single_localisation')
+```
+
+Plot the COMPARTMENTS single localisation proteins
+```{r, fig.height=8, fig.width=8}
+combined_protein_res_compartment_markers <- combined_protein_res_updated_markers %>% lapply(function(x){
+  fData(x)$markers <- NULL
+  x <- addMarkers(x, compartment_markers_list, mcol='markers')
+
+})
+
+compartment_colours <- getStockcol()[c(1:2,4,8,5,7,10,13,8)]
+
+for(condition in names(combined_protein_res_compartment_markers)){
+    
+    if(condition=='Control'){
+      legend.position='topleft'
+    }
+    else{
+      legend.position='bottomleft'
+    }
+  
+    combined_protein_res_updated_markers[[condition]] %>% filterNA() %>%
+      plot2D(cex=1, fcol='markers', col=colours)
+    addLegend(combined_protein_res_updated_markers[[condition]], where=legend.position, fcol='markers',
+              col=colours)
+    title(condition)
+    
+    combined_protein_res_compartment_markers[[condition]] %>% filterNA() %>%
+      plot2D(cex=1, fcol='markers', col=compartment_colours)
+    addLegend(combined_protein_res_compartment_markers[[condition]], where=legend.position, fcol='markers',
+              col=compartment_colours)
+    title(condition)
+    
+    combined_protein_res_updated_markers[[condition]] %>% filterNA() %>% 
+      plot2D(cex=1, fcol='markers', dims=c(3,4), col=colours)
+    addLegend(combined_protein_res_updated_markers[[condition]], where=legend.position, fcol='markers',
+              col=compartment_colours)
+    title(condition)
+    
+    combined_protein_res_compartment_markers[[condition]] %>% filterNA() %>%
+      plot2D(cex=1, fcol='markers', dims=c(3,4), col=compartment_colours)
+    addLegend(combined_protein_res_compartment_markers[[condition]], where=legend.position, fcol='markers')
+    title(condition)
+    
+    .data <- combined_protein_res_compartment_markers[[condition]] %>% filterNA()
+    .data <- .data[fData(.data)$markers!='unknown',]
+  
+    alphas <- (length(getMarkerClasses(combined_protein_res_compartment_markers[[condition]], fcol='markers')) *
+                 classWeights(combined_protein_res_compartment_markers[[condition]], fcol='markers'))
+
+      
+    p <- .data %>%
+      plot_marker_profiles(fcol='markers', facet_by='markers', group_by='replicate', alpha=alphas) +
+      ggtitle(condition) +
+      scale_x_discrete(labels=pData(combined_protein_res_compartment_markers[[condition]])$fraction) +
+      theme_camprot(base_size=12) +
+      theme(axis.text.x=element_text(angle=90, vjust=0.5, hjust=1), legend.position='none') +
+      geom_vline(xintercept=8.5, linetype=2, lwd=0.25) +
+      geom_vline(xintercept=16.5, linetype=2, lwd=0.25) +
+      scale_colour_manual(values=compartment_colours)
+  
+    print(p)
+}
+```
+
+
+
+
+
+
+OK, so the compartment markers for nucleaus are spread out over quite a range of profiles. Let's see if these are distinct profiles 
+
+
+
+First, re-define a function to plot profiles for a subset of proteins
+```{r}
+plot_marker_profiles_subset <- function(obj, class, value, direction='gt', fraction='SN'){
+  both_exprs_df <- lapply(names(obj), function(condition){
+    x <- obj[[condition]]
+      
+    x <- x[fData(x)$markers==class]
+      
+    if(direction=='gt'){
+      x <- x[apply(exprs(x)[,pData(x)$fraction==fraction,drop=FALSE], MARGIN=1, FUN=function(x) any(x>value, na.rm=TRUE)),]
+    } else if(direction=='lt'){
+      x <- x[apply(exprs(x)[,pData(x)$fraction==fraction,drop=FALSE], MARGIN=1, FUN=function(x) any(x<value, na.rm=TRUE)),]
+    } else{
+      stop('direction must be gt (greater than) or lt (less than)')
+    }
+    
+    exprs_df <- exprs(x)
+    f_df <- fData(x) %>% dplyr::select(Master.Protein.Accessions)
+    
+    exprs_df <- exprs_df %>%
+      data.frame() %>%
+      tibble::rownames_to_column('id') %>%
+      tidyr::pivot_longer(-id, names_to='sample', values_to='abundance') %>%
+      mutate(sample=factor(camprotR::remove_x(sample), levels=colnames(x)))
+    
+    exprs_df <- merge(exprs_df, f_df, by.x="id", by.y="row.names") %>%
+      merge(pData(x), by.x='sample', by.y='row.names') %>%
+      mutate(fraction=factor(fraction, levels=unique(pData(x)$fraction)),
+             condition=condition)
+    
+  }) %>% do.call(what='rbind')
+  
+  
+   p <- ggplot(both_exprs_df, aes(fraction, abundance,
+                             colour=factor(replicate), group=factor(replicate))) +
+      camprotR::theme_camprot(base_size=10) +
+      geom_line() +
+      theme(aspect.ratio=1,
+            axis.text.x=element_text(angle=45, vjust=1, hjust=1, size=10))  +
+      xlab("Sample") +
+      ylab("Abundance") +
+     facet_wrap(condition~Master.Protein.Accessions)
+   
+   return(list('p'=p, 'both_exprs_df'=both_exprs_df))
+}
+```
+
+Let's inspect the COMPARTMENTS nuclear profiles and see if they can be easily separated into 3 functionally distinct groups by crude supervised means. Note that we aren't trying to assign every protein to one of the 3 groups here. We just want enough to work out what's going on.
+```{r}
+p <- combined_protein_res_compartment_markers$DMSO[fData(combined_protein_res_compartment_markers$DMSO)$markers=='Nucleus',] %>%
+  plot_marker_profiles(facet_by='none', group_by='replicate', alpha=0.05) +
+  scale_x_discrete(labels=pData(combined_protein_res_compartment_markers$DMSO)$fraction) +
+  theme_camprot(base_size=12) +
+  theme(axis.text.x=element_text(angle=90, vjust=0.5, hjust=1), legend.position='none') +
+  geom_vline(xintercept=8.5, linetype=2, lwd=0.25) +
+  geom_vline(xintercept=16.5, linetype=2, lwd=0.25)  +
+  scale_colour_manual(values='black')
+
+print(p)
+```
+To keep things simple, we'll define 3 groups:
+1. High intensity in fraction 8
+2. High intensity in fraction 4
+3. High intensity in fraction 5
+
+```{r}
+nuclear_profiles <- combined_protein_res_compartment_markers$DMSO[
+  fData(combined_protein_res_compartment_markers$DMSO)$markers=='Nucleus',]
+
+dim(nuclear_profiles)
+
+nuclear_2 <- rownames(nuclear_profiles)[
+  apply(exprs(nuclear_profiles[,pData(nuclear_profiles)$fraction=='4']), MARGIN=1, function(x) max(x, na.rm=TRUE))>0.3]
+
+
+nuclear_3 <- rownames(nuclear_profiles)[
+  apply(exprs(nuclear_profiles[,pData(nuclear_profiles)$fraction=='5']), MARGIN=1, function(x) max(x, na.rm=TRUE))>0.2]
+nuclear_3 <- setdiff(nuclear_3, nuclear_2)
+
+
+nuclear_1 <- rownames(nuclear_profiles)[
+  apply(exprs(nuclear_profiles[,pData(nuclear_profiles)$fraction == '8']), MARGIN=1, function(x) max(x, na.rm=TRUE))>0.3]
+nuclear_1 <- setdiff(nuclear_1, union(nuclear_2, nuclear_3))
+
+
+
+nrow(nuclear_profiles)
+length(c(nuclear_1, nuclear_2, nuclear_3))
+print(intersect(nuclear_1, nuclear_2))
+print(intersect(nuclear_1, nuclear_3))
+print(intersect(nuclear_2, nuclear_3))
+```
+Let's add these marker sets and plot their profile
+```{r}
+combined_protein_res_compartment_markers_nuc_split <- combined_protein_res_compartment_markers %>% lapply(function(x){
+  fData(x)$old_markers <- fData(x)$markers
+  fData(x)$markers[fData(x)$markers=='Nucleus'] <- 'unknown'
+  fData(x)$markers[rownames(x) %in% nuclear_1] <- 'Nuclear_1'
+  fData(x)$markers[rownames(x) %in% nuclear_2] <- 'Nuclear_2'
+  fData(x)$markers[rownames(x) %in% nuclear_3] <- 'Nuclear_3'
+  
+  x
+})
+```
+
+```{r}
+p <- combined_protein_res_compartment_markers_nuc_split$DMSO[
+  grepl('Nuclear', fData(combined_protein_res_compartment_markers_nuc_split$DMSO)$markers),] %>%
+  plot_marker_profiles(facet_by='markers', group_by='replicate', alpha=0.2) +
+  scale_x_discrete(labels=pData(combined_protein_res_compartment_markers$DMSO)$fraction) +
+  theme_camprot(base_size=12) +
+  theme(axis.text.x=element_text(angle=90, vjust=0.5, hjust=1)) +
+  geom_vline(xintercept=8.5, linetype=2, lwd=0.25) +
+  geom_vline(xintercept=16.5, linetype=2, lwd=0.25)  +
+  scale_colour_manual(values=get_cat_palette(3)) +
+  theme(legend.position='none')
+
+print(p)
+```
+
+PCA plots 
+```{r, fig.height=7, fig.width=10}
+for(condition in names(combined_protein_res_compartment_markers_nuc_split)){
+    
+    legend.position='bottomleft'
+  
+    combined_protein_res_compartment_markers_nuc_split[[condition]] %>% plot2D(cex=1, col=compartment_colours)
+    addLegend(combined_protein_res_compartment_markers_nuc_split[[condition]], where=legend.position, col=compartment_colours)
+    title(condition)
+    
+    combined_protein_res_compartment_markers_nuc_split[[condition]] %>% plot2D(cex=1, dims=c(3,4), col=compartment_colours)
+    addLegend(combined_protein_res_compartment_markers_nuc_split[[condition]], where=legend.position, col=compartment_colours)
+    title(condition)
+    
+}
+```
+
+OK, so these seem like sufficiently distinct profiles. Now, let's perform a rudimentary GO analysis to see if there are any obvious enrichments in the above 3 nuclear marker sets. For example Nuclear_2 is likely to be nucleolus.
+
+We'll use goseq for the GO over-representation analysis in case there is any relationship to how many PSMs are quantified, e.g how well quantified the protein is, and the probability of being in a given nuclear marker set.
+```{r}
+psm_res_filt <- readRDS('../../out/psm_res_filt.rds')
+psm_counts <- psm_res_filt %>% lapply(count_features_per_protein)
+mean_n_psm <- psm_counts %>% do.call(what='rbind') %>% group_by(Master.Protein.Accessions) %>%
+  summarise(n_psm=mean(n, na.rm=TRUE))
+```
+
+```{r}
+library(goseq)
+library(GO.db)
+```
+
+Below, we define a function to run `goseq`. Note that there is no clear relationship between the number of PSMs and the probability of being in any of the nuclear profiles. Hence, we are using a straighforward Hypergeometric test.
+```{r}
+run_goseq <- function(foreground, background){
+  bias_data <- mean_n_psm %>% filter(Master.Protein.Accessions %in% background)
+  
+  psm_bias <- bias_data$n_psm
+  names(psm_bias) <- bias_data$Master.Protein.Accessions
+
+  print(length(psm_bias))
+  
+  x <- names(psm_bias) %in% foreground
+  names(x) <- names(psm_bias)
+  
+  pwf <- nullp(x, bias.data=psm_bias)
+  goseq_results <- goseq(pwf, gene2cat = human_go[human_go$ONTOLOGY %in% c('CC', 'BP'),], method='Hypergeometric') %>%
+    mutate('bh_fdr'=p.adjust(over_represented_pvalue, method='BH'))
+  
+  goseq_results$size_foreground <- sum(pwf$DEgenes)
+  goseq_results$size_background <- length(pwf$DEgenes)
+  
+  goseq_results %>% mutate(over_rep=((numDEInCat/numInCat) / (size_foreground/size_background)))
+  
+}
+
+
+comp_nuclear_markers <- list('nuclear_1'=nuclear_1, 'nuclear_2'=nuclear_2, 'nuclear_3'=nuclear_3)
+
+#union(nuclear_1, union(nuclear_2, nuclear_3) 
+over_rep_go <- comp_nuclear_markers %>%
+  names() %>%
+  lapply(function(x){
+    comp_nuclear_markers[[x]] %>%
+      run_goseq(background=rownames(combined_protein_res_compartment_markers$DMSO)) %>%
+      mutate(markers=x)
+    }) %>%
+  do.call(what='rbind')
+```
+
+
+```{r, fig.height=8, fig.width=8}
+enriched <- over_rep_go %>%
+  filter(numDEInCat>10, bh_fdr<0.01, !is.na(term), over_rep>3) %>%
+  group_split(markers) %>%
+  lapply(camprotR::remove_redundant_go) %>%
+  do.call(what='rbind')
+
+print(enriched)
+
+top_cats <- enriched %>%
+  pull(category) %>%
+  unique()
+
+x <- over_rep_go %>%
+  filter(category %in% top_cats, !is.na(term)) %>%
+  arrange(desc(over_rep))
+
+
+
+x %>% 
+  mutate(term=factor(term, levels=unique(x$term))) %>%
+  ggplot(aes(sprintf('%s (%s)', markers, size_foreground), term, fill=log2(over_rep))) +
+  geom_tile(stat='identity') +
+  theme_camprot(base_size=12) +
+  scale_fill_continuous(low='white', high=get_cat_palette(1), na.value='white', name='Over-rep\n(log2') +
+  geom_text(aes(label=numDEInCat)) +
+  xlab('') +
+  theme(aspect.ratio=5, axis.text.x=element_text(angle=45, hjust=1, vjust=1)) +
+  ylab('')
+```
+
+
+nuclear_1: No significant enrichments but 24/35 are nucleoplasm.
+
+nuclear_2:  41/88 are RNA processing. 20 are ribosome biogenesis. 30 are chromosome. 30 are nucleolus. This profiles appears to be nucleolus + chromosome
+
+nuclear_3: Nucleoplasm significantly enriched (21/22)
+
+Nuclear 1 and 3 both appear to be ~nucleoplasm.
+
+
+
+Let's explore proteins annotated to various sub-nuclear niches.
+```{r, fig.height=8, fig.width=8}
+updated_colours <- colours
+plot_foi <- function(foi, name){
+
+  combined_protein_res_updated_markers$DMSO %>% plot2D(cex=1, col=updated_colours)
+  addLegend(combined_protein_res_updated_markers$DMSO, where='topleft', col=updated_colours)
+  highlightOnPlot(filterNA(combined_protein_res_updated_markers$DMSO, pNA=0), foi=foi, pch=11, cex=1)
+  title(name)
+  
+  combined_protein_res_updated_markers$DMSO %>% plot2D(cex=1, dims=c(3,4), col=updated_colours)
+  addLegend(combined_protein_res_updated_markers$DMSO, where='topleft', col=updated_colours)
+  highlightOnPlot(filterNA(combined_protein_res_updated_markers$DMSO, pNA=0),
+                  foi=foi, pch=11, cex=1, args=list(dims=c(3,4)))
+  title(name)
+}
+
+
+plot_foi_linear <- function(foi, foi_name, alpha){
+  tmp <- combined_protein_res_updated_markers$DMSO
+  fData(tmp)$markers[rownames(tmp) %in% foi] <- 'foi'
+  
+  tmp[getMarkers(tmp, verbose=FALSE)=='foi'] %>%
+    plot_marker_profiles(facet_by='none', group_by='replicate', alpha=alpha) +
+    scale_x_discrete(labels=pData(combined_protein_res_updated_markers$DMSO)$fraction) +
+    theme_camprot(base_size=12) +
+    theme(axis.text.x=element_text(angle=90, vjust=0.5, hjust=1)) +
+    geom_vline(xintercept=8.5, linetype=2, lwd=0.25) +
+    geom_vline(xintercept=16.5, linetype=2, lwd=0.25) +
+    scale_colour_manual(values='black') +
+    theme(legend.position='none') +
+    ggtitle(foi_name)
+}
+
+
+nuc_lamina_filament <- human_go %>% filter(GO.ID=='GO:0005638') %>% pull(UNIPROTKB)
+
+nuc_inner_mem <- human_go %>% filter(GO.ID=='GO:0005637') %>% pull(UNIPROTKB)     
+
+nuc_outer_mem <- human_go %>% filter(GO.ID=='GO:0005640') %>% pull(UNIPROTKB)     
+   
+
+fois <- list(
+             'Nuclear Lamina filament'=nuc_lamina_filament,
+             'Nuclear inner membrane' = nuc_inner_mem,
+             'Nuclear outer membrane' = nuc_outer_mem,
+             'Nuclear membrane'=union(nuc_inner_mem, nuc_outer_mem))
+
+for(x in names(fois)){
+  if(length(intersect(fois[[x]], rownames(combined_protein_res_updated_markers$DMSO)))>0){
+    print(plot_foi(fois[[x]], x))
+    print(plot_foi_linear(fois[[x]], x, alpha=1))
+  }
+}
+```
+
+OK, so it looks like the nuclear lamina is in 'Nucleus-2', which we described as nucleolus + chromatin by GO term enrichment. Perhaps this is better defined as being Nucleus minus nucleoplasm!
+
+On this basis, I'm going to rename 'Nucleus-1'='Nucleoplasm-1','Nucleus-2'='Nucleus' and 'Nucleus-3'='Nucleoplasm-2'.
+
+```{r}
+combined_protein_res_compartment_markers_nuc_split
+```
+
+```{r, fig.height=8, fig.width=8}
+
+combined_protein_res_updated_markers_nuc_updated <- combined_protein_res_updated_markers %>%
+  lapply(function(x){
+    fData(x)$markers[grepl('NUCLEUS', fData(x)$markers)] <- 'unknown'
+    fData(x)$markers[rownames(x) %in% nuclear_1] <- 'NUCLEOPLASM-1'
+    fData(x)$markers[rownames(x) %in% nuclear_3] <- 'NUCLEOPLASM-2'
+    fData(x)$markers[rownames(x) %in% nuclear_2] <- 'NUCLEUS'
+    
+    fData(x)$markers_split_ribo[grepl('NUCLEUS', fData(x)$markers_split_ribo)] <- 'unknown'
+    fData(x)$markers_split_ribo[rownames(x) %in% nuclear_1] <- 'NUCLEOPLASM-1'
+    fData(x)$markers_split_ribo[rownames(x) %in% nuclear_3] <- 'NUCLEOPLASM-2'
+    fData(x)$markers_split_ribo[rownames(x) %in% nuclear_2] <- 'NUCLEUS'
+    x
+  })
+
+
+for(condition in names(combined_protein_res_updated_markers_nuc_updated)){
+  .data <- combined_protein_res_updated_markers_nuc_updated[[condition]]
+
+  .data <- .data[fData(.data)$markers!='unknown',]
+
+  alphas <- length(getMarkerClasses(.data)) * classWeights(.data)
+  
+  p <- .data %>%
+    plot_marker_profiles(facet_by='markers', group_by='replicate', alpha=alphas) +
+    ggtitle(condition) +
+    scale_x_discrete(labels=pData(.data)$fraction) +
+    theme_camprot(base_size=12) +
+    theme(axis.text.x=element_text(angle=90, vjust=0.5, hjust=1), legend.position='none') +
+    geom_vline(xintercept=8.5, linetype=2, lwd=0.25) +
+    geom_vline(xintercept=16.5, linetype=2, lwd=0.25) +
+    scale_colour_manual(values=updated_colours)
+
+  print(p)
+  
+}
+
+
+```
+
+
+```{r}
+saveRDS(combined_protein_res_updated_markers_nuc_updated,
+        '../../results/combined_protein_res.rds')
+```
+
