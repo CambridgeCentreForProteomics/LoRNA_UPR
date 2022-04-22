@@ -17,7 +17,6 @@ fontsize: 11pt
 ```{r}
 library(camprotR)
 library(tidyverse)
-library(compositions)
 
 library(ggtern)
 library(MSnbase)
