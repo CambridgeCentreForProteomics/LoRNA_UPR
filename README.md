@@ -29,7 +29,6 @@ This repository makes extensive use of non-base R packages. To run all notebooks
 
 ** From CRAN **:
 - broom
-- **CHECK** compositions 
 - cowplot
 - dbscan
 - ggalluvial
@@ -47,6 +46,7 @@ This repository makes extensive use of non-base R packages. To run all notebooks
 - pbmcapply
 - pROC
 - RColorBrewer
+- Rtsne
 - writexl
 
 ** From Bioconductor **

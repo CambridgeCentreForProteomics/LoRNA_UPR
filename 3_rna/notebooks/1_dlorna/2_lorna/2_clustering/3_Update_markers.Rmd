@@ -29,7 +29,7 @@ select <- dplyr::select
 
 Read in transcript and gene-level data
 ```{r}
-all_datasets <- readRDS('../2_data_processing/out/all_datasets.rds')
+all_datasets <- readRDS('../1_data_processing/out/all_datasets.rds')
 ```
 
 Update markers using NNMF results. First we consider only those RNAs which were pre-defined as markers and found in the assoicated NNMF cluster for the correct localisation
@@ -49,7 +49,7 @@ nnmf_and_marker <- dlorna_nnmf$DMSO$uncorrected %>%
 Then we'll add high expressed snoRNA as a subcluster in NNMF_3 since these should localise to the nucleolus.
 ```{r}
 
-total <- readRDS('../2_data_processing/out/gene_quant_total_res.rds')
+total <- readRDS('../1_data_processing/out/gene_quant_total_res.rds')
 
 top_exp_snoRNA <- exprs(total[fData(total)$gene_biotype=='snoRNA',]) %>%
   apply(1, FUN=function(x) mean(x, na.rm=TRUE)) %>%

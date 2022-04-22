@@ -17,7 +17,10 @@ fontsize: 11pt
 ```{r}
 library(biomaRt)
 library(tidyverse)
+library(MSnbase)
+```
 
+```{r}
 ensembl <- useEnsembl(biomart="ensembl", version=102, dataset="hsapiens_gene_ensembl")
 
 ```
