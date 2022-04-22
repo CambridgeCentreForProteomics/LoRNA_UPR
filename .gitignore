@@ -1,0 +1,70 @@
+# Lorenzi et al sup data
+1_external/15_lncRNA/Lorenzi_et_al/41587_2021_936_MOESM3_ESM.xlsx
+
+# transcript features inc kmers (too large; run notebook 6 in parent directory)
+3_rna/notebooks/1_dlorna/2_lorna/5_relocalisation/out/transcript_features.rds
+
+# bandle res object
+2_protein/notebooks/out/bandleres.rds
+2_protein/notebooks/out/bandleres_reps.rds
+
+# large xlxs sup table
+lorna/shared_files/Lorenzi_et_al/41587_2021_936_MOESM3_ESM.xlsx
+
+# ENCODE files
+1_external/1_ENCORE_eCLIP/out/*
+1_external/1_ENCORE_eCLIP/ENCODE_download/
+1_external/4_ENCODE_Cyt_Nuc/ENCFF*tsv
+1_external/13_CeFraSeq/ENCODE_download/
+
+# libreoffice lockfile
+.~lock.*
+
+# emacs tmpfile
+*~
+
+# Very large combined dataset files
+3_rna/notebooks/1_dlorna/2_lorna/1_data_processing/out/all_datasets.rds
+3_rna/notebooks/1_dlorna/2_lorna/2_clustering/out/all_datasets_with_novel.rds
+3_rna/notebooks/1_dlorna/2_lorna/3_proportional_localisation/results/all_datasets_final.rds
+3_rna/notebooks/1_dlorna/2_lorna/5_relocalisation/out/proportions_annot.rds
+
+# History files
+.Rhistory
+.Rapp.history
+
+# Session Data files
+.RData
+
+# User-specific files
+.Ruserdata
+
+# Example code in package build process
+*-Ex.R
+
+# Output files from R CMD build
+/*.tar.gz
+
+# Output files from R CMD check
+/*.Rcheck/
+
+# RStudio files
+.Rproj.user/
+
+# produced vignettes
+vignettes/*.html
+vignettes/*.pdf
+
+# OAuth2 token, see https://github.com/hadley/httr/releases/tag/v0.3
+.httr-oauth
+
+# knitr and R markdown default cache directories
+*_cache/
+/cache/
+
+# Temporary files created by R markdown
+*.utf8.md
+*.knit.md
+
+# R Environment Variables
+.Renviron
