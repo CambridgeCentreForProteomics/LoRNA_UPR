@@ -68,6 +68,29 @@ names(proportions_annotated) <- names(proportions)
 proportions %>% lapply(dim)
 proportions_annotated %>% lapply(dim)
 ```
+
+```{r, fig.height=10, fig.width=10}
+mean_proportions_to_plot <- proportions_annotated %>%
+  names() %>%
+  lapply(function(level){
+    if(level=='transcript'){
+      biotype_col='transcript_biotype'
+    } else {biotype_col='gene_biotype'}
+    
+    
+    proportions_annotated[[level]] %>%
+        filter(!!sym(biotype_col) %in% c('protein_coding', 'lncRNA',
+                                         'nonsense_mediated_decay', 'processed_transcript',
+                                         'retained_intron')) %>%
+      mutate(biotype=!!sym(biotype_col)) %>%
+      pivot_longer(cols=c(Cytosol, Cytosol_Light, Membrane, Nuc),
+                   names_to='localisation',
+                   values_to='proportion')
+  })
+names(mean_proportions_to_plot) <- names(proportions_annotated)  
+
+```
+
 Read in the ribosome profiling data from Teemu et al (2015).
 ```{r}
 
@@ -309,6 +332,35 @@ for(condition in names(dlorna$gene)){
 }
 
 ```
+
+Comparison with Khong et al: https://pubmed.ncbi.nlm.nih.gov/29129640/
+```{r}
+khong_et_al <- readxl::read_excel('../../../../../1_external/3_granules/Khong_et_al_2017/1-s2.0-S1097276517307906-mmc2.xlsx', sheet=1)
+
+p <- mean_proportions_to_plot$gene %>% filter(condition=='Tg', localisation=='Cytosol_Light') %>%
+  merge(khong_et_al, by.x='id', by.y='test_id') %>%
+  mutate(Localization=factor(Localization, levels=c('enriched', 'Neither', 'depleted'))) %>%
+  ggplot(aes(proportion, x=log2(`Fold change`))) +
+  geom_point(aes(colour=Localization, alpha=Localization), size=0.5, alpha=0.1) +
+  geom_smooth() +
+  theme_camprot(border=FALSE, base_family='sans') +
+  xlim(-5, NA) +
+  scale_colour_manual(values=c(get_cat_palette(1), 'grey', get_cat_palette(2)[2]), name='Khong et al (2017)',
+                      labels=c('Enriched', 'Neither', 'Depleted')) +
+  scale_alpha_manual(values=c(1, 0.1, 1), name='Khong et al',
+                      labels=c('Enriched', 'Neither', 'Depleted')) +
+  guides(color = guide_legend(override.aes = list(alpha = 1, size=3))) +
+  ylab('LoRNA granule\nproportion (UPR)') +
+  xlab('Khong et al (2017)\nSG/Total (log2)') +
+  ylim(0,1)
+
+print(p)
+
+ggsave('../../../../../5_manuscript_figures/Figure_5/external/Khong.png', width=4, height=4)
+ggsave('../../../../../5_manuscript_figures/Figure_5/external/Khong.pdf', width=4, height=4)
+```
+
+
 
 Any relationship between relocalisation to membrane and change in RNA abundance?
 ```{r}
