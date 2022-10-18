@@ -350,7 +350,7 @@ p <- mean_proportions_to_plot$gene %>% filter(condition=='Tg', localisation=='Cy
   scale_alpha_manual(values=c(1, 0.1, 1), name='Khong et al',
                       labels=c('Enriched', 'Neither', 'Depleted')) +
   guides(color = guide_legend(override.aes = list(alpha = 1, size=3))) +
-  ylab('LoRNA granule\nproportion (UPR)') +
+  ylab('LoRNA cytosol light\nproportion (UPR)') +
   xlab('Khong et al (2017)\nSG/Total (log2)') +
   ylim(0,1)
 
