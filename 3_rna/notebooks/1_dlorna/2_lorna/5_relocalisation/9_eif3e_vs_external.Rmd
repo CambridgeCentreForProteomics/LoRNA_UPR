@@ -1,0 +1,86 @@
+---
+title: "Effect of eIF3e KD on membrane localisation"
+output: html_notebook
+---
+
+Here, we use Lin & Li et al (2020) (https://pubmed.ncbi.nlm.nih.gov/32589965/) to explore whether eIF3e may have a role in promoting UPR-resistant membrane localisation. 
+
+Load libraries
+```{r}
+library(tidyverse)
+library(camprotR)
+```
+
+Load model outputs from previous notebook
+```{r}
+penalised_fits <- readRDS('./out/penalised_fits.rds')
+residuals_annot <- readRDS('./out/residuals_annot.rds')
+```
+
+
+Read in Lin & Li et al data
+```{r}
+lin_li_2020_ribo_prof <- readxl::read_excel(
+  '../../../../../1_external/11_eif3/Lin_Li_et_al_2020/mmc2.xlsx', skip=5, sheet=1)
+
+lin_li_2020_eif3e_ribo_density_5prime <- readxl::read_excel(
+  '../../../../../1_external/11_eif3/Lin_Li_et_al_2020/mmc2.xlsx', skip=4, sheet=3, range='A5:K2688')
+
+```
+
+Start with changes in ribosome density in codons 25-75.
+```{r}
+to_plot <- residuals_annot$transcript %>%
+  mutate(increased_5prime_ribo_density=id %in% lin_li_2020_eif3e_ribo_density_5prime$trans_id)
+
+
+legend_name <- "eIF3e KD\nIncreased ribosome\ndensity in\ncodons 25-75\nLin & Li et al (2020)"
+p <- to_plot %>%
+  ggplot(aes(DMSO, Tg, colour=increased_5prime_ribo_density)) +
+  geom_point(aes(alpha=increased_5prime_ribo_density, size=increased_5prime_ribo_density)) +
+  geom_smooth() +
+  theme_camprot(base_size=15, border=FALSE, base_family='sans') +
+  scale_colour_manual(values=c('grey20', get_cat_palette(7)[7]), name=legend_name) +
+  scale_size_manual(values=c(.2, .5), name=legend_name) +
+  scale_alpha_manual(values=c(.2, .5), name=legend_name) +
+  theme(strip.background=element_blank()) +
+  xlim(0,1) + ylim(0,1) +
+  xlab('Membrane proportion Control') +
+  ylab('Membrane proportion UPR')
+
+print(p)
+ggsave('../../../../../5_manuscript_figures/Figure_5/external/Lin_li_rd.png', height=3.5, width=6)
+ggsave('../../../../../5_manuscript_figures/Figure_5/external/Lin_li_rd.pdf', height=3.5, width=6)
+```
+OK, so no apparent difference between transcripts with increased ribosome density upon eIF4e KD.
+
+What about genes with altereted translation efficiency upon eIF3e KD?
+```{r}
+to_plot <- residuals_annot$gene %>%
+  merge(lin_li_2020_ribo_prof, by.x='external_gene_name', by.y='gene_name')
+
+table(lin_li_2020_ribo_prof$pvalue.adjust<0.1, lin_li_2020_ribo_prof$log2FC_TE>0)
+
+legend_name <- "eIF3e KD\nAltered TE\nLin & Li et al (2020)"
+p <- to_plot %>%
+  mutate(ribo_prof=ifelse(pvalue.adjust<0.1,
+                        ifelse(log2FC_TE>0, 'Increased', 'Decreased'),
+                        'No change')) %>%
+  ggplot(aes(DMSO, Tg, colour=ribo_prof)) +
+  geom_point(aes(alpha=ribo_prof, size=ribo_prof)) +
+  geom_smooth() +
+  theme_camprot(base_size=15, border=FALSE, base_family='sans') +
+  scale_colour_manual(values=c(get_cat_palette(2), 'grey20'), name=legend_name) +
+  scale_size_manual(values=c(.5, .5, .2), name=legend_name) +
+  scale_alpha_manual(values=c(.5, .5, .2), name=legend_name) +
+  theme(strip.background=element_blank()) +
+  xlim(0,1) + ylim(0,1) +
+  xlab('Membrane proportion Control') +
+  ylab('Membrane proportion UPR')
+
+print(p)
+ggsave('../../../../../5_manuscript_figures/Figure_5/external/Lin_li_te.png', height=3.5, width=6)
+ggsave('../../../../../5_manuscript_figures/Figure_5/external/Lin_li_te.pdf', height=3.5, width=6)
+```
+Again, no apparent relationship.
+
