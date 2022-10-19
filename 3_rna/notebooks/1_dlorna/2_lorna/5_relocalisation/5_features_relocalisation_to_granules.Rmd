@@ -24,7 +24,6 @@ library(coRdon)
 Read in quantification and proportion objects.
 ```{r}
 total_tx <- readRDS('../2_data_processing/out/transcript_quant_total_res.rds')
-total_gene <- readRDS('../2_data_processing/out/gene_quant_total_res.rds')
 
 all_datasets <- readRDS('../4_proportional_localisation/results/all_datasets_final.rds')
 proportions <- readRDS('../6_relocalisation/out/proportions_annot.rds')

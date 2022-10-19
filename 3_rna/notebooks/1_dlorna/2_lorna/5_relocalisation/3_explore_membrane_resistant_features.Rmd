@@ -214,7 +214,29 @@ eIF3d_eCLIP_simplified <- to_plot_eif3$gene %>%
 
 combined_eif3d_residuals <- lamper_simplified %>%
   merge(eIF3d_eCLIP_simplified, by='id') %>%
-  mutate(eif3d_bound_any=(EIF3D_HepG2==1 | lamper_eif3d))
+  mutate(eif3d_bound_any=factor((EIF3D_HepG2==1 | lamper_eif3d)))
+```
+
+Below we compate the minimal GAM with just DMSO as the explanatory variable to the more complex model where seperate smooths are fit for each level of eIF3D bound/unbound
+```{r}
+
+gam_fit_minimal <- mgcv::gam(Tg~s(DMSO, bs='cs'), data=combined_eif3d_residuals)
+summary(gam_fit_minimal)
+gam_fit_inc3d <- mgcv::gam(Tg~eif3d_bound_any+s(DMSO, by=eif3d_bound_any, bs='cs'), data=combined_eif3d_residuals)
+summary(gam_fit_inc3d)
+compare_models <- anova(gam_fit_minimal, gam_fit_inc3d, test="F")
+
+print(compare_models)
+```
+```{r}
+
+
+```
+
+
+```{r}
+
+compare_models_p <- ifelse(compare_models$`Pr(>F)`[2] < 2.2e-16, '< 2.2e-16', sprintf('= %s', format(compare_models$`Pr(>F)`[2], digits=2, scientific = TRUE)))
 
  p <- combined_eif3d_residuals %>%
   ggplot(aes(DMSO, Tg, colour=eif3d_bound_any)) +
@@ -230,7 +252,8 @@ combined_eif3d_residuals <- lamper_simplified %>%
   ylab('Membrane proportion UPR') +
   theme(legend.position=c(0.5,1), legend.justification=c(0.5,1), legend.background=element_blank()) +
   xlim(0,1) +
-  ylim(0,1)
+  ylim(0,1) +
+  annotate(geom='text', label=sprintf('p %s', compare_models_p), x=1, y=1, hjust=1)
 
 print(p)
 ggsave('../../../../../5_manuscript_figures/Figure_6/mem_proportions/any_eif3_mem_prop.png', width=3.5, height=3.5)
@@ -241,6 +264,9 @@ p2 <- p + annotate(geom='rect', xmin=0.5, ymin=0, xmax=1, ymax=1, alpha=0.25, fi
 print(p2)
 
 ```
+
+
+
 Perform GO over-representation analysis
 ```{r}
 dmso_localisation <- c('all', 'membrane', 'non_membrane')

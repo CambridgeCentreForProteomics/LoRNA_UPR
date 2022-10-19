@@ -90,6 +90,11 @@ proportions$transcript %>%
 Plot the distribution of relocalisation to granules for mRNA and lncRNA
 ```{r}
 
+mRNA_reloc <- granule_relocalisation$transcript %>% filter(gene_biotype=='mRNA') %>% pull(diff)
+lncRNA_reloc <- granule_relocalisation$transcript %>% filter(gene_biotype=='lncRNA') %>% pull(diff)
+
+ks_res <- ks.test(mRNA_reloc, lncRNA_reloc)
+print(ks_res) # ensure p is still < 2.2e-16 as this is hard coded below in figure annotation!
 
 p <- granule_relocalisation$transcript %>%
   filter(gene_biotype %in% c('mRNA', 'lncRNA')) %>%
@@ -100,7 +105,8 @@ p <- granule_relocalisation$transcript %>%
   ylab('Fraction of RNAs') +
   xlab('Granule proportion (UPR - Control)') +
   scale_color_manual(values=c('grey40', get_cat_palette(7)[7]), name='Gene biotype') +
-  geom_vline(xintercept=0, linetype=2, colour='grey')
+  geom_vline(xintercept=0, linetype=2, colour='grey') +
+  annotate(geom='text', label=sprintf('K-S test\nD=%s\np < 2.2e-16', round(ks_res$statistic, 2)), x=-0.7, y=0.9, hjust=0)
 
 print(p)
 ggsave('../../../../5_manuscript_figures/Figure_5/lncRNA/lncRNA_vs_mRNA_granule_reloc.png', width=5, height=3.5)
