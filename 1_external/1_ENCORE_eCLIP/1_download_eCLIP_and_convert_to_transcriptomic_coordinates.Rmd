@@ -104,7 +104,6 @@ end <- Sys.time()
 print(end)
 print(end-start)
 
-saveRDS(bed_ranges_transcriptome, './out/bed_ranges_transcriptome.rds')
 ```
 
 Convert to data.frame
@@ -114,9 +113,6 @@ bed_ranges_transcriptome_df <- bed_ranges_transcriptome %>% names() %>% lapply(f
     data.frame() %>%
     dplyr::mutate(desc=x)
   }) %>% dplyr::bind_rows()
-
-
-saveRDS(bed_ranges_transcriptome_df, './out/bed_ranges_transcriptome_df.rds')
 
 bed_ranges_transcriptome_df %>%
   dplyr::select(xHits, desc) %>%

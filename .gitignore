@@ -12,7 +12,6 @@
 lorna/shared_files/Lorenzi_et_al/41587_2021_936_MOESM3_ESM.xlsx
 
 # ENCODE files
-1_external/1_ENCORE_eCLIP/out/*
 1_external/1_ENCORE_eCLIP/ENCODE_download/
 1_external/4_ENCODE_Cyt_Nuc/ENCFF*tsv
 1_external/13_CeFraSeq/ENCODE_download/

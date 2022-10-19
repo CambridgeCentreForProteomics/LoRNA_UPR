@@ -165,7 +165,12 @@ to_plot <- granule_relocalisation$transcript %>% merge(nc_freq, by.x='id', by.y=
   mutate(facet=ifelse(ensembl_gene_id %in% slorna_not_nuc, 'sLoRNA cyt', 'other')) 
 
 
-  
+sig <- to_plot %>%
+  group_by(AU_bin) %>%
+  do(broom::tidy(wilcox.test(formula=diff~gene_biotype, data=.))) %>%
+  filter(p.value<0.001) %>%
+  mutate(gene_biotype='mRNA')
+
 
 p <- to_plot %>%
   ggplot(aes(AU_bin, diff, colour=gene_biotype, group=interaction(AU_bin, gene_biotype))) +
@@ -180,7 +185,8 @@ p <- to_plot %>%
       axis.ticks=element_blank()) +
   xlab('AU content') +
   ylab('Granule proportion\n(UPR - Control)') +
-  guides(color = guide_legend(override.aes = list(size = 3) ) )
+  guides(color = guide_legend(override.aes = list(size = 3) ) ) +
+  geom_text(data=sig, label='*', y=Inf, vjust=1, hjust=-0.2, colour='black', size=10)
 
 print(p)
 
@@ -203,7 +209,7 @@ print(p2)
 ggsave('../../../../5_manuscript_figures/Figure_5/lncRNA/lncRNA_vs_mRNA_au_content_granule_reloc.png', width=5, height=3.5, plot=p2)
 ggsave('../../../../5_manuscript_figures/Figure_5/lncRNA/lncRNA_vs_mRNA_au_content_granule_reloc.pdf', width=5, height=3.5, plot=p2)
 
-print(p2 +facet_wrap(~facet))
+
 ```
 
 ```{r}
@@ -220,6 +226,9 @@ to_plot %>%
 
 Plot length vs relocalisation for mRNA and lncRNA
 ```{r}
+
+
+
 colnames(transcript_seq)
 to_plot <- granule_relocalisation$transcript %>%
   merge(transcript_seq[,c("ensembl_transcript_id", "transcript_length" )], by.x='id', by.y='ensembl_transcript_id') %>%
@@ -230,6 +239,15 @@ to_plot <- granule_relocalisation$transcript %>%
 n_rnas <- to_plot %>%
   group_by(gene_biotype, transcript_length_bin) %>%
   tally()
+
+
+# test that relocalisation for membrane RNAs is always higher than cytosol RNAs, regardless of length.
+sig <- to_plot %>%
+  group_by(transcript_length_bin) %>%
+  do(broom::tidy(wilcox.test(formula=diff~gene_biotype, data=.))) %>%
+  filter(p.value<0.001) %>%
+  mutate(gene_biotype='mRNA')
+
 
 p <- to_plot %>%
   ggplot(aes(transcript_length_bin, diff, colour=gene_biotype, group=interaction(gene_biotype, transcript_length_bin))) +
@@ -244,10 +262,10 @@ p <- to_plot %>%
       axis.ticks=element_blank()) +
   xlab('Transcript length (nt)') +
   ylab('Granule proportion\n(UPR - Control)') +
-  guides(color = guide_legend(override.aes = list(size = 3) ) )
+  guides(color = guide_legend(override.aes = list(size = 3) ) ) +
+  geom_text(data=sig, label='*', y=Inf, vjust=1, hjust=-0.2, colour='black', size=10)
 
 print(p)
-
 range <- to_plot %>% pull(diff)
 
 range <- range[is.finite(range)]
@@ -273,7 +291,7 @@ print(p3)
 ggsave('../../../../5_manuscript_figures/Figure_5/lncRNA/lncRNA_vs_mRNA_length_granule_reloc.png', width=5, height=3.5, plot=p2)
 ggsave('../../../../5_manuscript_figures/Figure_5/lncRNA/lncRNA_vs_mRNA_length_granule_reloc.pdf', width=5, height=3.5, plot=p2)
 
-print(p2 + facet_wrap(~facet))
+
 ```
-```
+
 

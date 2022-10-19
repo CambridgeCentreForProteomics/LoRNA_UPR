@@ -23,11 +23,11 @@ library(coRdon)
 ```
 Read in quantification and proportion objects.
 ```{r}
-total_tx <- readRDS('../2_data_processing/out/transcript_quant_total_res.rds')
+total_tx <- readRDS('../1_data_processing/out/transcript_quant_total_res.rds')
 
-all_datasets <- readRDS('../4_proportional_localisation/results/all_datasets_final.rds')
-proportions <- readRDS('../6_relocalisation/out/proportions_annot.rds')
-proportions_per_rep <- readRDS('../4_proportional_localisation/results/proportions_per_rep.rds')
+all_datasets <- readRDS('../3_proportional_localisation/results/all_datasets_final.rds')
+proportions <- readRDS('../5_relocalisation/out/proportions_annot.rds')
+proportions_per_rep <- readRDS('../3_proportional_localisation/results/proportions_per_rep.rds')
 ```
 
 Determine mean transcript expression. We will use this downstream for codon optimality.
@@ -52,7 +52,6 @@ print(length(all_gene_ids))
 
 ensembl <- useEnsembl(biomart="ensembl", version=102, dataset="hsapiens_gene_ensembl")
 
-listAttributes(ensembl)
 transcript_lengths <- getBM(attributes=c('ensembl_transcript_id',
                                          'ensembl_gene_id',
                                          'transcript_length',
@@ -131,6 +130,20 @@ names(granule_relocalisation) <- names(proportions)
 ```{r}
 
 
+
+```
+
+```{r}
+# test that relocalisation for membrane RNAs is always higher than cytosol RNAs, regardless of length.
+sig <- granule_relocalisation$transcript %>%
+  mutate(binned_length=Hmisc::cut2(transcript_length, g=6)) %>%
+  filter(major_localisation %in% c('Cytosol', 'Membrane')) %>%
+  group_by(binned_length) %>%
+  do(broom::tidy(wilcox.test(formula=diff~major_localisation, data=.))) %>%
+  filter(p.value<0.001) %>%
+  mutate(major_localisation='Membrane')
+
+
 plot_length_vs_granule_reloc <- function(obj){
   obj %>%
     filter(major_localisation %in% c('Cytosol', 'Membrane', 'Nucleus')) %>%
@@ -148,7 +161,8 @@ plot_length_vs_granule_reloc <- function(obj){
 
 p <- granule_relocalisation$transcript %>%
   mutate(binned_length=Hmisc::cut2(transcript_length, g=6)) %>%
-  plot_length_vs_granule_reloc()
+  plot_length_vs_granule_reloc() +
+  geom_text(data=sig, label='*', y=Inf, vjust=1, hjust=-0.2, colour='black', size=10)
 
 print(p)
 
