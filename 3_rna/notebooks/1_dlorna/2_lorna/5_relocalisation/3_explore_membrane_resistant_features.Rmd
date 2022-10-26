@@ -217,6 +217,46 @@ combined_eif3d_residuals <- lamper_simplified %>%
   mutate(eif3d_bound_any=factor((EIF3D_HepG2==1 | lamper_eif3d)))
 ```
 
+Below we compate the minimal GAM with just DMSO as the explanatory variable to the more complex model where seperate smooths are fit for each level of eIF3D bound/unbound (just using Subunit-seq data from Lamper et al)
+```{r}
+
+gam_fit_minimal <- mgcv::gam(Tg~s(DMSO, bs='cs'), data=combined_eif3d_residuals)
+summary(gam_fit_minimal)
+gam_fit_lamper_inc3d <- mgcv::gam(Tg~eif3d_bound_any+s(DMSO, by=factor(lamper_eif3d), bs='cs'), data=combined_eif3d_residuals)
+summary(gam_fit_inc3d)
+compare_models_lamper <- anova(gam_fit_minimal, gam_fit_lamper_inc3d, test="F")
+
+print(compare_models_lamper)
+```
+```{r}
+
+compare_models_lamper_p <- ifelse(compare_models_lamper$`Pr(>F)`[2] < 2.2e-16, '< 2.2e-16', sprintf('= %s', format(compare_models_lamper$`Pr(>F)`[2], digits=2, scientific = TRUE)))
+
+ p <- combined_eif3d_residuals %>%
+  ggplot(aes(DMSO, Tg, colour=lamper_eif3d)) +
+  geom_point(aes(alpha=lamper_eif3d, size=lamper_eif3d), pch=16, size=1) +
+  geom_smooth(se=FALSE) +
+  theme_camprot(base_size=15, border=FALSE, base_family='sans') +
+  scale_colour_manual(values=c('grey30', get_cat_palette(7)[7]),
+                      name='eIF3d', labels=c('Unbound', 'Bound')) +
+  scale_size_manual(values=c(.2, .5), name='eIF3d', labels=c('Unbound', 'Bound')) +
+  scale_alpha_manual(values=c(.2, .5), name='eIF3d', labels=c('Unbound', 'Bound')) +
+  theme(strip.background=element_blank()) +
+  xlab('Membrane proportion Control') +
+  ylab('Membrane proportion UPR') +
+  theme(legend.position=c(0.5,1), legend.justification=c(0.5,1), legend.background=element_blank()) +
+  xlim(0,1) +
+  ylim(0,1) +
+  annotate(geom='text', label=sprintf('p %s', compare_models_p), x=1, y=1, hjust=1)
+
+print(p)
+ggsave('../../../../../5_manuscript_figures/Figure_6/mem_proportions/lamper_eif3_mem_prop.png', width=3.5, height=3.5)
+ggsave('../../../../../5_manuscript_figures/Figure_6/mem_proportions/lamper_eif3_mem_prop.pdf', width=3.5, height=3.5)
+
+
+```
+
+
 Below we compate the minimal GAM with just DMSO as the explanatory variable to the more complex model where seperate smooths are fit for each level of eIF3D bound/unbound
 ```{r}
 
@@ -228,10 +268,7 @@ compare_models <- anova(gam_fit_minimal, gam_fit_inc3d, test="F")
 
 print(compare_models)
 ```
-```{r}
 
-
-```
 
 
 ```{r}
