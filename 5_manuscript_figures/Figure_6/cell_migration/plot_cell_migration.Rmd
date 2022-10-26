@@ -174,7 +174,7 @@ for_ttest <- final_timepoint %>%
   select(-condition) %>%
   pivot_wider(values_from='adj_Mean', names_from='siRNA')
   
-t.test(for_ttest_paired$Control, for_ttest_paired$eIF3d, paired=TRUE)
+t.test(for_ttest$Control, for_ttest$eIF3d, paired=TRUE)
 
 
 ```
@@ -225,7 +225,9 @@ for_ttest_eif3d <- for_ttest %>% filter(siRNA=='eIF3d')
 t.test(cell_death_perc~condition, data=for_ttest_control)
 t.test(cell_death_perc~condition, data=for_ttest_eif3d)
 ```
-Repeating the cell migratiopn plots for the 3j siRNA data.
+
+
+Repeating the cell migration plots for the 3j siRNA data.
 ```{r}
 infile_3j <- './raw/3j_all_migration_replicates.xlsx'
 ```
@@ -247,7 +249,7 @@ all_assays_3j <- sheets_3j %>% lapply(function(sheet_n){
     separate(name, into=c('type', 'condition'), sep='_') %>%
     pivot_wider(values_from='value', names_from='type') %>%
     separate(condition, into=c('siRNA', 'condition'), sep='\\.') %>%
-    mutate(siRNA=recode(siRNA, '0'='Control', 'siCt'='Control', 'sieIF3d'='eIF3d')) %>%
+    mutate(siRNA=recode(siRNA, '0'='Control', 'siCt'='Control', 'sieIF3j'='eIF3j')) %>%
     mutate(condition=recode(condition, '1%'='NC', 'DMSO'='Control', 'Tg'='UPR')) %>%
     mutate(replicate=sheet_n) %>%
     mutate(condition=factor(condition, levels=c('Control', 'UPR', 'NC')))
@@ -330,4 +332,18 @@ p <- final_timepoint_3j %>%
 print(p)
 ggsave('./cell_index_24h_3j.png', width=3.5, height=3.5)
 ggsave('./cell_index_24h_3j.pdf', width=3.5, height=3.5)
+```
+```{r}
+for_ttest_3j <- final_timepoint_3j %>%
+  dplyr::select(-SD, -Time) %>%
+  merge(dmso_values_3j, by=c('replicate', 'siRNA')) %>%
+  mutate(adj_Mean=Mean/DMSO_value) %>%
+  dplyr::select(-Mean, -DMSO_value) %>%
+  filter(condition=='UPR') %>%
+  select(-condition) %>%
+  pivot_wider(values_from='adj_Mean', names_from='siRNA')
+  
+t.test(for_ttest_3j$Control, for_ttest_3j$eIF3j, paired=TRUE)
+
+
 ```
