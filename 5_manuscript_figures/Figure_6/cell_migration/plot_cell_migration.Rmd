@@ -225,4 +225,109 @@ for_ttest_eif3d <- for_ttest %>% filter(siRNA=='eIF3d')
 t.test(cell_death_perc~condition, data=for_ttest_control)
 t.test(cell_death_perc~condition, data=for_ttest_eif3d)
 ```
+Repeating the cell migratiopn plots for the 3j siRNA data.
+```{r}
+infile_3j <- './raw/3j_all_migration_replicates.xlsx'
+```
 
+
+```{r}
+sheets_3j <- readxl::excel_sheets(infile_3j)
+
+all_assays_3j <- sheets_3j %>% lapply(function(sheet_n){
+  conditions <- readxl::read_excel(infile_3j, sheet=sheet_n, n_max=0) %>% colnames()
+  conditions <- conditions[seq(1, length(conditions), 2)] %>%
+  gsub(pattern=' ', replacement='.') %>%
+  gsub(pattern='(|\\(|\\))', replacement='')
+
+  cell_migration_data <- readxl::read_excel(infile_3j, sheet=sheet_n, skip=1)
+  colnames(cell_migration_data) <- c('Time', paste0(c('Mean_', 'SD_'), rep(conditions, each=2)))
+  
+  to_plot <- cell_migration_data %>% pivot_longer(cols=-Time) %>%
+    separate(name, into=c('type', 'condition'), sep='_') %>%
+    pivot_wider(values_from='value', names_from='type') %>%
+    separate(condition, into=c('siRNA', 'condition'), sep='\\.') %>%
+    mutate(siRNA=recode(siRNA, '0'='Control', 'siCt'='Control', 'sieIF3d'='eIF3d')) %>%
+    mutate(condition=recode(condition, '1%'='NC', 'DMSO'='Control', 'Tg'='UPR')) %>%
+    mutate(replicate=sheet_n) %>%
+    mutate(condition=factor(condition, levels=c('Control', 'UPR', 'NC')))
+
+})
+
+```
+
+```{r}
+
+p <- all_assays_3j[[2]] %>% 
+  ggplot(aes(Time, Mean,
+             colour=condition,
+             group=paste(condition, siRNA))) +
+  geom_line() +
+  geom_errorbar(aes(ymin=Mean-SD, ymax=Mean+SD)) +
+  theme_camprot(base_size=15, border=FALSE, base_family='sans') +
+  facet_wrap(~siRNA, scale='free_y') +
+  theme(strip.background=element_blank()) +
+  scale_x_continuous(breaks=seq(0,24,6)) +
+  xlab('Time (h)') +
+  ylab('Cell index') +
+  scale_colour_manual(values=get_cat_palette(3),  name='Condition')
+
+print(p)
+ggsave('./cell_index_timeseries_single_rep_3j.png', width=5, height=3.5)
+ggsave('./cell_index_timeseries_single_rep_3j.pdf', width=5, height=3.5)
+
+
+p <- all_assays_3j %>% bind_rows() %>%
+  #filter(condition!='NC') %>%
+    ggplot(aes(Time, Mean,
+               colour=condition,
+               linetype=siRNA,
+               group=paste(condition, siRNA))) +
+    geom_line() +
+  theme_camprot(base_size=12, border=FALSE, base_family='sans') +
+  facet_wrap(~(gsub('n', '', replicate)), scales='free_y') +
+  theme(strip.background=element_blank()) +
+  scale_x_continuous(breaks=seq(0,24,6)) +
+  xlab('Time (h)') +
+  ylab('Cell index') +
+  scale_colour_manual(values=get_cat_palette(3), name='Condition')
+
+print(p)
+ggsave('./cell_index_timeseries_3j.png')
+ggsave('./cell_index_timeseries_3j.pdf')
+```
+```{r}
+final_timepoint_3j <- all_assays_3j %>% bind_rows() %>%
+  group_by(replicate, siRNA, condition) %>%
+  slice_max(Time, n=1)
+```
+
+```{r, fig.width=3.5, fig.height=3.5}
+dmso_values_3j <- final_timepoint_3j %>%
+  ungroup() %>%
+  filter(condition=='Control') %>%
+  dplyr::select(siRNA, replicate, DMSO_value=Mean)
+
+
+p <- final_timepoint_3j %>%
+  dplyr::select(-SD, -Time) %>%
+  merge(dmso_values_3j, by=c('replicate', 'siRNA')) %>%
+  mutate(adj_Mean=Mean/DMSO_value) %>%
+  filter(condition!='Control', condition!='NC') %>%
+  ggplot(aes(siRNA, adj_Mean, fill=siRNA))  +
+  geom_line(aes(group=replicate), size=0.5, linetype=2) +
+  geom_point(pch=21, size=7, colour='white', fill='white', position=position_dodge(width=1)) +
+  geom_point(pch=21, size=3, colour='black', position=position_dodge(width=1)) +
+  #stat_summary(geom='point', position=position_dodge(width=1), size=3) +
+  #stat_summary(geom = "errorbar", position=position_dodge(width=1), width=0.4, fun.data=mean_se, fun.args = list(mult = 2)) +
+  scale_y_continuous(breaks=seq(0.6, 1, 0.2), limits=c(0.6, 1), expand=c(0,0)) +
+  theme_camprot(border=FALSE, base_size=15, base_family='sans') +
+  scale_fill_manual(values=c(get_cat_palette(7)[5:6]), name='', guide=FALSE) +
+  ylab('Cell index (UPR / Control)') +
+  theme(aspect.ratio=1.25)
+  
+
+print(p)
+ggsave('./cell_index_24h_3j.png', width=3.5, height=3.5)
+ggsave('./cell_index_24h_3j.pdf', width=3.5, height=3.5)
+```
