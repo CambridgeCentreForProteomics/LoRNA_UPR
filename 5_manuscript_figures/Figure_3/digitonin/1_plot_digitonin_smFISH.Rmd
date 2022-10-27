@@ -1,0 +1,79 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+
+```{r}
+library(camprotR)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggbeeswarm)
+```
+
+```{r}
+digitonin_smFISH_targets <- readxl::read_excel('../raw/digitonin_smFISH.xlsx', n_max=1)
+targets <- colnames(digitonin_smFISH_targets)[!grepl('\\.\\.\\.', colnames(digitonin_smFISH_targets))]
+digitonin_smFISH <- readxl::read_excel('../raw/digitonin_smFISH.xlsx', range='B2:W63')
+digitonin_smFISH <- digitonin_smFISH[,colSums(!is.na(digitonin_smFISH))>0]
+digitonin_smFISH <- digitonin_smFISH[,seq(2,ncol(digitonin_smFISH), by=2)]
+colnames(digitonin_smFISH) <- paste(rep(targets, each=2),
+                                    c('-', '+'), sep=':')
+digitonin_smFISH <- digitonin_smFISH %>% 
+  pivot_longer(cols=everything()) %>%
+  separate(name, into=c('target', 'digitonin'), sep=':') %>%
+  filter(is.finite(value))
+
+```
+
+```{r}
+digitonin_smFISH %>%
+  ggplot(aes(target, value, colour=digitonin, group=digitonin)) +
+  geom_quasirandom(dodge.width=0.5) +
+  stat_summary(fun.ymin='median',fun.ymax='median', geom='errorbar',
+               width=0.5, position=position_dodge(width=0.5), colour='black', size=2) +
+  scale_colour_manual(values=get_cat_palette(2), name='Digitonin') +
+  theme_camprot(border=FALSE, base_size=15, base_family='sans') +
+  xlab('') +
+  ylab('RNA copies')
+  
+```
+```{r}
+digitonin_smFISH_minus_ref <- digitonin_smFISH %>%
+  filter(digitonin=='-') %>%
+  group_by(target) %>%
+  summarise(ref=mean(value))
+```
+
+```{r}
+to_plot <- digitonin_smFISH %>%
+  filter(digitonin=='+') %>%
+  merge(digitonin_smFISH_minus_ref, by='target') %>%
+  mutate(diff=value/ref)
+
+to_plot  %>%
+  ggplot(aes(target, diff)) +
+  stat_summary(geom='bar', fun='mean') + 
+  stat_summary(geom='errorbar', fun.data='mean_cl_boot') +
+  xlab('') +
+  ylab('Membrane localisation\n(Digitonin +/-)') +
+  theme_camprot(border=FALSE, base_size =15, base_family='sans')
+
+
+```
+
+```{r}
+digitonin_smFISH %>%
+  group_by(digitonin, target) %>%
+  summarise(ref=mean(value))
+
+digitonin_smFISH %>%
+  filter(digitonin=='+') %>%
+  merge(digitonin_smFISH_minus_ref, by='target') %>%
+  mutate(diff=value/ref) %>%
+  filter(target=='DST') %>%
+  pull(diff) %>% summary()
+```
+
