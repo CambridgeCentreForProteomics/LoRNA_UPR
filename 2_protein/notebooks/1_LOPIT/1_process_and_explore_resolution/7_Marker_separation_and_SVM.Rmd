@@ -156,13 +156,13 @@ p <- organalle_f1_to_plot %>%
   ggplot(aes(F1, marker_set, colour=marker_set)) +
   geom_boxplot(position='dodge', notch=TRUE) +
   theme_camprot(base_size=15, border=FALSE, base_family='sans') +
-  #scale_colour_manual(values=rev(colours[1:12]), guide=FALSE) +
-  scale_colour_manual(values=rev(getStockcol()[1:12]), guide=FALSE) +
+  scale_colour_manual(values=rev(colours[1:12]), guide=FALSE) +
+  #scale_colour_manual(values=rev(getStockcol()[1:12]), guide=FALSE) +
   theme(aspect.ratio=3) +
   ylab('') +
   scale_x_continuous(breaks=seq(0,1,0.5), limits=c(0,1)) +
-  #theme(axis.text.y = element_text(colour=rev(colours[1:12])))
-  theme(axis.text.y = element_text(colour=rev(getStockcol()[1:12])))
+  theme(axis.text.y = element_text(colour=rev(colours[1:12])))
+  #theme(axis.text.y = element_text(colour=rev(getStockcol()[1:12])))
 
 print(p)
 

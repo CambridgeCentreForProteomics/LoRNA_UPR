@@ -247,7 +247,7 @@ ggsave('../../../../5_manuscript_figures/Figure_1/protein_profiles/linear_all.pd
 
 
 ```{r}
-colours <- getStockcol()
+colours <- readRDS('../../../../6_shiny_app/out/shiny_colours.rds')$Protein %>% unname()
 
 for(condition in names(combined_protein_res)){
   
