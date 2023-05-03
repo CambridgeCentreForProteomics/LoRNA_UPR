@@ -392,4 +392,148 @@ print(x %>% filter(x$id %in% x$id[duplicated(x$id)]))
 ```
 
 
+```{r, warning=FALSE}
+?readxl::read_excel
+Horste_el_al_2022 <- readxl::read_excel('../../../../../1_external/3_granules/Horste_el_al_2022/Table_S1_final.xlsx', range='A1:V9156',
+                                        col_types=c(rep('guess', 8), 'text', 'text', rep('guess', 12))) %>%
+  mutate(classification=ifelse(!is.na(`TMD classification`), `TMD classification`, `Non-TMD_classification`))
+```
+
+```{r}
+colnames(Horste_el_al_2022)
+table(Horste_el_al_2022$`classification`, (Horste_el_al_2022$`Partition coefficient (Pco)_TG`/Horste_el_al_2022$`Pco_ER`)>1/0.8)
+
+
+table(Horste_el_al_2022$`TMD classification`)
+table(Horste_el_al_2022$`TMD classification`, (Horste_el_al_2022$`Partition coefficient (Pco)_TG`/Horste_el_al_2022$`Pco_ER`)>1/0.8)
+
+ggplot(Horste_el_al_2022, aes(`classification`, log2(`Partition coefficient (Pco)_TG`/`Pco_ER`))) +
+  geom_boxplot()
+```
+
+```{r}
+library(biomaRt)
+
+ensembl <- useEnsembl(biomart="ensembl", version=102, dataset="hsapiens_gene_ensembl")
+
+listAttributes(ensembl)
+gene_id_name <- getBM(attributes=c('ensembl_gene_id',
+                                         'external_gene_name'),
+                                         mart = ensembl,
+                     filters = 'external_gene_name',
+                     values=unique(Horste_el_al_2022$Gene_name))
+
+Horste_el_al_2022<- Horste_el_al_2022 %>%
+  merge(gene_id_name, by.x='Gene_name', by.y='external_gene_name')
+
+```
+
+
+```{r}
+library(ggbeeswarm)
+
+
+p <- proportions$gene %>%
+  filter(condition=='DMSO') %>%
+  mutate('Nucleus'=Nucleus+Nucleolus) %>%
+  dplyr::select(id, 'Granule'=Cytosol_Light, Cytosol, Nucleus, Membrane)  %>%
+  pivot_longer(cols=-id, names_to='localisation', values_to='proportion') %>%
+  merge(Horste_el_al_2022[,c('ensembl_gene_id', 'classification')], by.x='id', by.y='ensembl_gene_id') %>%
+  filter(classification!='NL') %>%
+  ggplot(aes(localisation, proportion, colour=`classification`, group=interaction(localisation, `classification`))) +
+  geom_quasirandom(dodge.width=0.5, size=0.5) +
+  geom_boxplot(width=0.25, colour='black', position=position_dodge(width=0.5), notch=TRUE) +
+  scale_colour_manual(values=get_cat_palette(4), name='Horste et al\n(2022)') +
+  theme_camprot(border=FALSE, base_size=15, base_family='sans') +
+  xlab('LoRNA localisation') +
+  ylab('Proportion')
+
+ggplot2:::plot.ggplot(p)
+
+p <- proportions$gene %>%
+  filter(condition=='DMSO') %>%
+  mutate('Nucleus'=Nucleus+Nucleolus) %>%
+  dplyr::select(id, 'Granule'=Cytosol_Light, Cytosol, Nucleus, Membrane)  %>%
+  pivot_longer(cols=-id, names_to='localisation', values_to='proportion') %>%
+  merge(Horste_el_al_2022[,c('ensembl_gene_id', 'classification')], by.x='id', by.y='ensembl_gene_id') %>%
+  filter(classification!='NL') %>%
+  ggplot(aes(`classification`, proportion, colour=localisation, group=interaction(localisation, `classification`))) +
+  geom_quasirandom(dodge.width=0.5, size=0.5) +
+  geom_boxplot(width=0.25, colour='black', position=position_dodge(width=0.5), notch=TRUE) +
+  scale_colour_manual(values=get_cat_palette(4), name='LoRNA localisation') +
+  theme_camprot(border=FALSE, base_size=15, base_family='sans') +
+  xlab('Horste et al\n(2022)') +
+  ylab('Proportion')
+
+ggplot2:::plot.ggplot(p)
+```
+
+```{r}
+library(ggtern)
+
+for(class in setdiff(unique(Horste_el_al_2022$classification), 'NL')){
+  p <- proportions$gene %>%
+  filter(condition=='DMSO') %>%
+  mutate('Nucleus'=Nucleus+Nucleolus) %>%
+  dplyr::select(id, 'Granule'=Cytosol_Light, Cytosol, Nucleus, Membrane)  %>%
+  merge(Horste_el_al_2022[,c('ensembl_gene_id', 'classification')], by.x='id', by.y='ensembl_gene_id') %>%
+  filter(classification==class) %>%
+      ggtern(aes(x=Cytosol, y=Membrane, z=Granule)) +
+  geom_point(size=0.25, alpha=0.5) +
+      theme_bw(base_size=15) +
+      theme_arrowlarge() +
+      theme_hideticks() +
+      theme_hidetitles() +
+      xlab('Cytosol') +
+      ylab('Membrane') +
+      zlab('Granule') +
+      theme(strip.background = element_blank(),
+            strip.text.x=element_text(size=15, vjust=2),
+            strip.text.y=element_text(size=15, vjust=2)) +
+    ggtitle(class)
+  
+  print(p)
+}
+
+proportions$gene %>%
+  filter(condition=='DMSO') %>%
+  mutate('Nucleus'=Nucleus+Nucleolus) %>%
+  dplyr::select(id, 'Granule'=Cytosol_Light, Cytosol, Nucleus, Membrane)  %>%
+  merge(Horste_el_al_2022[,c('ensembl_gene_id', 'classification')], by.x='id', by.y='ensembl_gene_id') %>%
+  filter(classification!='NL') %>%
+      ggtern(aes(x=Cytosol, y=Membrane, z=Granule, colour=classification)) +
+  geom_point(size=0.25, alpha=0.5) +
+      theme_bw(base_size=15) +
+      theme_arrowlarge() +
+      theme_hideticks() +
+      theme_hidetitles() +
+      xlab('Cytosol') +
+      ylab('Membrane') +
+      zlab('Granule') +
+      theme(strip.background = element_blank(),
+            strip.text.x=element_text(size=15, vjust=2),
+            strip.text.y=element_text(size=15, vjust=2))
+
+p <- proportions$gene %>%
+  filter(condition=='DMSO') %>%
+  mutate('Nucleus'=Nucleus+Nucleolus) %>%
+  dplyr::select(id, 'Granule'=Cytosol_Light, Cytosol, Nucleus, Membrane)  %>%
+  filter(id %in% Hubstenberger_et_al_enr$ensembl_gene_id) %>%
+      ggtern(aes(x=Cytosol, y=Membrane, z=Granule)) +
+  geom_point(size=0.25, alpha=0.5) +
+      theme_bw(base_size=15) +
+      theme_arrowlarge() +
+      theme_hideticks() +
+      theme_hidetitles() +
+      xlab('Cytosol') +
+      ylab('Membrane') +
+      zlab('Granule') +
+      theme(strip.background = element_blank(),
+            strip.text.x=element_text(size=15, vjust=2),
+            strip.text.y=element_text(size=15, vjust=2)) +
+    ggtitle('Hubstenberger et al')
+  
+print(p)
+
+```
 
