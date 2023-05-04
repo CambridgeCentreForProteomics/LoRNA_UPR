@@ -20,6 +20,7 @@ library(pRoloc)
 library(pRolocdata)
 library(pRolocExt)
 ```
+
 ```{r}
 colours <- readRDS('../../../../6_shiny_app/out/shiny_colours.rds')$Protein %>% unname()
 ```

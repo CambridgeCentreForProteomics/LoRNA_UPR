@@ -1,5 +1,5 @@
 ---
-title: "Parse stress granule data"
+title: "Parse ENCODE fract-seq data"
 author:
   - name: "Tom Smith"
     affiliation: "Cambridge Centre for Proteomics"

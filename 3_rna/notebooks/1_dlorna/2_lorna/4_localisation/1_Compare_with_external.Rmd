@@ -20,6 +20,7 @@ library(camprotR)
 library(ggrepel)
 library(pRoloc)
 library(biomaRt)
+library(ggbeeswarm)
 ```
 
 First, read in the proportions
@@ -29,11 +30,90 @@ proportions <- readRDS('../3_proportional_localisation/results/proportions.rds')
 ```
 
 
+
+
+Read in the MERFISH data
+```{r}
+xia_et_al_ER <- readRDS('../../../../../1_external/18_MERFISH/out/xia_et_al_er.rds')
+xia_et_al_Nuc <- readRDS('../../../../../1_external/18_MERFISH/out/xia_et_al_nuc.rds')
+
+xia_et_al_ER_Nuc <- merge(xia_et_al_ER, xia_et_al_Nuc, by='ensembl_transcript_id', suffixes=c('.er', '.nuc'))
+```
+
+```{r}
+proportions_vs_MERFISH <- proportions$transcript %>%
+  filter(condition=='DMSO') %>%
+  merge(xia_et_al_ER_Nuc, by.x='id', by.y='ensembl_transcript_id') %>%
+  mutate(xia_er_sig=ifelse((`log2(Fold-Change).er`>0 & `adjusted p-value.er`<1E-10), 'Sig.', 'Not Sig.'),
+         xia_nuc_sig=ifelse((`log2(Fold-Change).nuc`>0 & `adjusted p-value.nuc`<1E-10), 'Sig.', 'Not Sig.'))
+
+```
+
+```{r}
+
+
+p <- proportions_vs_MERFISH %>%
+  arrange(xia_er_sig) %>%
+  ggplot(aes(Membrane, `log2(Fold-Change).er`, colour=xia_er_sig)) +
+  geom_point(pch=20) +
+  theme_camprot(border=FALSE, base_size=15, base_family='sans') +
+  scale_colour_manual(values=c('grey', get_cat_palette(1)), 'ER enriched\n(MERFISH)') +
+  geom_smooth(colour='grey40', alpha=1, se=FALSE) +
+  guides(color = guide_legend(override.aes = list(size = 5) ) ) +
+  xlab('LoRNA membrane proportion') +
+  ylab('MERFISH ER vs cytoplasm\nlog2(fold-change)') +
+  theme(legend.position=c(1, 0.1), legend.justification=c(1, 0.1), legend.box=element_blank())
+
+print(p)
+ggsave('../../../../../5_manuscript_figures/Figure_2/merfish/er.png', height=5, width=5)
+ggsave('../../../../../5_manuscript_figures/Figure_2/merfish/er.pdf', height=5, width=5)
+
+p2 <- ggplot(proportions_vs_MERFISH, aes(xia_er_sig, Membrane, )) +
+  geom_quasirandom(size=0.5) +
+  theme_camprot(border=FALSE, base_size=15, base_family='sans') +
+  xlab('Xia et al MERFISH ER-enriched') +
+  ylab('LoRNA membrane proportion')
+
+print(p2)
+
+```
+
+```{r}
+p <- proportions_vs_MERFISH %>%
+  arrange(xia_er_sig) %>%
+  ggplot(aes(Nucleus+Nucleolus, `log2(Fold-Change).nuc`, colour=xia_nuc_sig)) +
+  geom_point(pch=20) +
+  theme_camprot(border=FALSE, base_size=15, base_family='sans') +
+  scale_colour_manual(values=c('grey', get_cat_palette(1)), 'Nucleus enriched\n(MERFISH)') +
+  geom_smooth(colour='grey40', se=FALSE) +
+  guides(color = guide_legend(override.aes = list(size = 5) ) ) +
+  xlab('LoRNA nucleus proportion') +
+  ylab('MERFISH Nucleus vs cytoplasm\nlog2(fold-change)') +
+  theme(legend.position=c(1, 0.05), legend.justification=c(1, 0.05), legend.box=element_blank())
+
+print(p)
+ggsave('../../../../../5_manuscript_figures/Figure_2/merfish/nuc.png', height=5, width=5)
+ggsave('../../../../../5_manuscript_figures/Figure_2/merfish/nuc.pdf', height=5, width=5)
+
+p2 <- ggplot(proportions_vs_MERFISH, aes(xia_nuc_sig, Nucleus+Nucleolus, )) +
+  geom_quasirandom(size=0.5) +
+  theme_camprot(border=FALSE, base_size=15, base_family='sans') +
+  xlab('Xia et al MERFISH Nucleus-enriched') +
+  ylab('LoRNA nucleus proportion')
+
+print(p2)
+```
+
+```{r, fig.height=4, fig.width=8}
+print(p %+% (filter(proportions_vs_MERFISH, biotype.nuc %in% c('protein_coding', 'retained_intron'))) + facet_wrap(~biotype.nuc) + theme(strip.background=element_blank()))
+```
+
+
 ```{r}
 all_datasets <- readRDS('../3_proportional_localisation/results/all_datasets_final.rds')
 ```
 
-Rad in the CeFra-Seq data
+Read in the CeFra-Seq data
 ```{r}
 cefraseq <- readRDS('../../../../../1_external/13_CeFraSeq/out/cefraseq.rds')
 cefraseq_quant <- readRDS('../../../../../1_external/13_CeFraSeq/out/cefraseq_quant.rds')

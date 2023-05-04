@@ -1,0 +1,59 @@
+---
+title: "Parse MERFISH"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we parse Xia et al MERFISH data
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+```{r}
+library(tidyverse)
+library(camprotR)
+library(biomaRt)
+```
+
+```{r}
+ensembl <- useEnsembl(biomart="ensembl", version=102, dataset="hsapiens_gene_ensembl")
+
+genename2id <- getBM(attributes=c('external_gene_name', 'ensembl_gene_id'), mart = ensembl) %>% unique()
+
+# remove instances where the gene name is mapped to multiple gene ids
+duplicated_gene_name <- genename2id$external_gene_name[duplicated(genename2id$external_gene_name)] %>% unique()
+print(length(duplicated_gene_name))
+
+genename2id <- genename2id %>% filter(!external_gene_name %in% duplicated_gene_name)
+```
+
+```{r}
+xia_et_al_tx_map <- read.table('./pnas.1912459116.sd01.csv', sep=',', header=1)  %>% filter(!grepl('^Blank', name)) %>% dplyr::select(name, id) %>%
+  mutate(ensembl_transcript_id=gsub('\\.\\d+', '', id))
+```
+
+```{r}
+xia_et_al_er <- readxl::read_excel('./pnas.1912459116.sd04.xlsx', sheet=2) %>% filter(!grepl('^Blank', Gene)) %>%
+   merge(xia_et_al_tx_map, by.x='Gene',by.y='name')
+```
+
+
+
+```{r}
+xia_et_al_nuc <- readxl::read_excel('./pnas.1912459116.sd06.xlsx', sheet=2) %>% filter(!grepl('^Blank', Gene)) %>%
+   merge(xia_et_al_tx_map, by.x='Gene',by.y='name')
+print(nrow(xia_et_al_nuc))
+```
+
+
+
+```{r}
+saveRDS(xia_et_al_er, './out/xia_et_al_er.rds')
+
+saveRDS(xia_et_al_nuc, './out/xia_et_al_nuc.rds')
+```
+

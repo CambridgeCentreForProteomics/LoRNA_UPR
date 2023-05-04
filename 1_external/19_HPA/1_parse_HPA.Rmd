@@ -1,0 +1,63 @@
+---
+title: "Parse HPA"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we parse the HPA data
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+```{r}
+library(dplyr)
+library(ggplot2)
+```
+
+```{r}
+hpa <- read.table('./subcellular_location.tsv', sep='\t', header=1)
+```
+
+The HPA annotations use the ensembl gene id as the key. We therefore need to map this to uniprot IDs
+```{r}
+ensembl <- useEnsembl(biomart="ensembl", version=102, dataset="hsapiens_gene_ensembl")
+gene2protein <- getBM(attributes=c('ensembl_gene_id', 'uniprotswissprot'), mart = ensembl) 
+
+gene2protein <- gene2protein %>%
+  filter(ensembl_gene_id!="", uniprotswissprot!="", !is.na(ensembl_gene_id), !is.na(uniprotswissprot))
+
+# Remove duplicated IDs (we don't want one gene -> multiple proteins or vis versa)
+dup_gene_id <- names(table(gene2protein$ensembl_gene_id))[table(gene2protein$ensembl_gene_id)>1]
+dup_protein <- names(table(gene2protein$uniprotswissprot))[table(gene2protein$uniprotswissprot)>1]
+
+gene2protein <- gene2protein %>%
+  filter(!ensembl_gene_id %in% dup_gene_id, !uniprotswissprot %in% dup_protein)
+
+print(dim(gene2protein))
+```
+
+```{r}
+hpa_allocations <- hpa %>%
+  merge(gene2protein, by.x="Gene", by.y="ensembl_gene_id") %>%
+  dplyr::select(Gene, uniprotswissprot, Approved, Supported, Enhanced, Uncertain) %>%
+  gather("hpa_confidence", "allocation", -c(uniprotswissprot, Gene)) %>%
+  separate_rows(allocation, sep=";") %>%
+  filter(allocation!='')
+
+print(head(hpa_allocations))
+```
+
+```{r, figure.height=15}
+hpa_allocations %>% group_by(hpa_confidence, allocation)  %>% tally() %>%
+  ggplot(aes(hpa_confidence, allocation, fill=n)) +
+  geom_tile() +
+  camprotR::theme_camprot(base_size=15) +
+  theme(aspect.ratio=3, axis.text.x=element_text(angle=45, vjust=1, hjust=1))
+```
+```{r}
+saveRDS(hpa_allocations, './out/hpa_allocations.rds')
+```
+
