@@ -1,0 +1,162 @@
+---
+title: "Compare classifications with HPA"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here, we compare the protein subcellular localisation classification with HPA
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+```{r}
+library(MSnbase)
+library(pRolocdata)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+```
+
+```{r}
+
+dLOPIT <- readRDS('../../out/combined_protein_res_inc_bandle_loc.rds')$DMSO 
+dLOPIT_loc <- fData(dLOPIT)[,'bandle_alloc',drop=FALSE] %>% filter(!is.na(bandle_alloc))
+dLOPIT_loc$classification <- recode(dLOPIT_loc$bandle_alloc, 'NUCLEOPLASM-1'='NUCLEUS', 'NUCLEOPLASM-2'='NUCLEUS', 'PROTEIN COMPLEX'='CYTOSOL', 'RIBOSOME'='CYTOSOL')
+```
+
+```{r}
+HPA <- readRDS('../../../../1_external/19_HPA/out/hpa_allocations.rds')
+
+```
+
+Note that the HPA annotations do not all line up with the marker classes we are using in dLOPIT.
+```{r}
+table(HPA$allocation)
+table(dLOPIT_loc$classification)
+```
+Below, we update the HPA annotations so that they match our marker classes. In some cases, e.g "Actin filaments" there is no equivalent in our marker class so we will simply ignore this classification
+```{r}
+
+HPA <- HPA %>%
+  mutate(allocation_LOPIT_classes=recode(
+    allocation,
+    'Cytoplasmic bodies'='CYTOSOL',
+    "Cytosol"="CYTOSOL",
+    "Endoplasmic reticulum"="ER",
+    "Golgi apparatus"="GOLGI",
+    "Lysosomes"="LYSOSOME",
+    "Mitochondria"="MITOCHONDRIA",
+    "Nuclear bodies"="NUCLEUS",
+    "Nuclear membrane"="NUCLEUS",
+    "Nuclear speckles"="NUCLEUS",
+    "Nucleoli fibrillar center"="NUCLEUS",
+    "Nucleoli"="NUCLEUS",
+    "Nucleoplasm"="NUCLEUS",
+    "Nucleus"="NUCLEUS",
+    "Peroxisomes"="PEROXISOME",
+    "Plasma membrane"="PM")) %>%
+  filter(allocation_LOPIT_classes %in% unique(dLOPIT_loc$bandle_alloc))
+
+table(HPA$allocation_LOPIT_classes)
+```
+
+
+```{r}
+dLOPIT_loc_vs_HPA <- HPA %>% filter(hpa_confidence %in% c('Approved')) %>%
+  merge(dLOPIT_loc, by.y='row.names', by.x='uniprotswissprot', all.y=TRUE)
+```
+
+```{r}
+
+dLOPIT_loc_vs_HPA_agreement <- dLOPIT_loc_vs_HPA %>%
+  filter(classification!='Undefined', !is.na(allocation_LOPIT_classes)) %>%
+  group_by(uniprotswissprot, classification) %>%
+  summarise(agreement=length(intersect(allocation_LOPIT_classes, classification))>0)
+```
+
+```{r}
+dLOPIT_loc_vs_HPA_agreement_summarised <- dLOPIT_loc_vs_HPA_agreement %>% group_by(classification, agreement) %>% tally() %>%
+  pivot_wider(names_from=agreement, values_from=n)
+
+dLOPIT_loc_vs_HPA_agreement %>%
+  group_by(agreement) %>% tally() %>%
+  pivot_wider(names_from=agreement, values_from=n) %>%
+  mutate(fraction_TRUE=`TRUE`/(`TRUE`+`FALSE`))
+```
+
+```{r}
+data(lopitdcU2OS2018)
+data(hyperLOPITU2OS2018)
+```
+
+```{r}
+table(fData(hyperLOPITU2OS2018)$final.assignment)
+
+hLOPIT_loc <- fData(hyperLOPITU2OS2018)[,'final.assignment',drop=FALSE] %>% filter(!is.na(final.assignment))
+hLOPIT_loc$classification <- recode(hLOPIT_loc$final.assignment,
+                                    'GA'='GOLGI',
+                                    'CHROMATIN'='NUCLEUS',
+                                    'RIBOSOME 40S'='CYTOSOL',
+                                    'RIBOSOME 60S'='CYTOSOL',
+                                    'PROTEASOME'='CYTOSOL')
+
+  
+table(hLOPIT_loc$classification )
+```
+
+```{r}
+table(fData(lopitdcU2OS2018)$final.assignment)
+
+dcLOPIT_loc <- fData(lopitdcU2OS2018)[,'final.assignment',drop=FALSE] %>% filter(!is.na(final.assignment))
+dcLOPIT_loc$classification <- recode(dcLOPIT_loc$final.assignment,
+                                    'GA'='GOLGI',
+                                    'NUCLEUS/CHROMATIN'='NUCLEUS',
+                                    'RIBOSOME'='CYTOSOL',
+                                    'PROTEASOME'='CYTOSOL')
+
+
+table(dcLOPIT_loc$classification )
+```
+
+```{r}
+hLOPIT_loc_vs_HPA <- HPA %>% filter(hpa_confidence %in% c('Approved')) %>%
+  merge(hLOPIT_loc, by.y='row.names', by.x='uniprotswissprot', all.y=TRUE)
+
+hLOPIT_loc_vs_HPA_agreement <- hLOPIT_loc_vs_HPA %>%
+  filter(classification!='unknown', !is.na(allocation_LOPIT_classes)) %>%
+  group_by(uniprotswissprot, classification) %>%
+  summarise(agreement=length(intersect(allocation_LOPIT_classes, classification))>0)
+
+hLOPIT_loc_vs_HPA_agreement_summarised <- hLOPIT_loc_vs_HPA_agreement %>%
+  group_by(classification, agreement) %>% tally() %>%
+  pivot_wider(names_from=agreement, values_from=n)
+
+hLOPIT_loc_vs_HPA_agreement %>%
+  group_by(agreement) %>% tally() %>%
+  pivot_wider(names_from=agreement, values_from=n) %>%
+  mutate(fraction_TRUE=`TRUE`/(`TRUE`+`FALSE`))
+```
+
+```{r}
+dcLOPIT_loc_vs_HPA <- HPA %>% filter(hpa_confidence %in% c('Approved')) %>%
+  merge(dcLOPIT_loc, by.y='row.names', by.x='uniprotswissprot', all.y=TRUE)
+
+dcLOPIT_loc_vs_HPA_agreement <- dcLOPIT_loc_vs_HPA %>%
+  filter(classification!='unknown', !is.na(allocation_LOPIT_classes)) %>%
+  group_by(uniprotswissprot, classification) %>%
+  summarise(agreement=length(intersect(allocation_LOPIT_classes, classification))>0)
+
+dcLOPIT_loc_vs_HPA_agreement_summarised <- dcLOPIT_loc_vs_HPA_agreement %>%
+  group_by(classification, agreement) %>% tally() %>%
+  pivot_wider(names_from=agreement, values_from=n)
+
+
+dcLOPIT_loc_vs_HPA_agreement %>%
+  group_by(agreement) %>% tally() %>%
+  pivot_wider(names_from=agreement, values_from=n) %>%
+  mutate(fraction_TRUE=`TRUE`/(`TRUE`+`FALSE`))
+
+```
