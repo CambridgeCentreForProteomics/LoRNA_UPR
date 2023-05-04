@@ -24,7 +24,12 @@ library(ggplot2)
 
 dLOPIT <- readRDS('../../out/combined_protein_res_inc_bandle_loc.rds')$DMSO 
 dLOPIT_loc <- fData(dLOPIT)[,'bandle_alloc',drop=FALSE] %>% filter(!is.na(bandle_alloc))
-dLOPIT_loc$classification <- recode(dLOPIT_loc$bandle_alloc, 'NUCLEOPLASM-1'='NUCLEUS', 'NUCLEOPLASM-2'='NUCLEUS', 'PROTEIN COMPLEX'='CYTOSOL', 'RIBOSOME'='CYTOSOL')
+dLOPIT_loc$classification <- recode(dLOPIT_loc$bandle_alloc,
+                                    'NUCLEOPLASM-1'='NUCLEUS',
+                                    'NUCLEOPLASM-2'='NUCLEUS',
+                                    'PROTEIN COMPLEX'='CYTOSOL',
+                                    'RIBOSOME'='CYTOSOL',
+                                    'MITOCHONDRION'='MITOCHONDRIA')
 ```
 
 ```{r}
@@ -101,7 +106,8 @@ hLOPIT_loc$classification <- recode(hLOPIT_loc$final.assignment,
                                     'CHROMATIN'='NUCLEUS',
                                     'RIBOSOME 40S'='CYTOSOL',
                                     'RIBOSOME 60S'='CYTOSOL',
-                                    'PROTEASOME'='CYTOSOL')
+                                    'PROTEASOME'='CYTOSOL',
+                                    'MITOCHONDRION'='MITOCHONDRIA')
 
   
 table(hLOPIT_loc$classification )
@@ -115,48 +121,142 @@ dcLOPIT_loc$classification <- recode(dcLOPIT_loc$final.assignment,
                                     'GA'='GOLGI',
                                     'NUCLEUS/CHROMATIN'='NUCLEUS',
                                     'RIBOSOME'='CYTOSOL',
-                                    'PROTEASOME'='CYTOSOL')
+                                    'PROTEASOME'='CYTOSOL',
+                                    'MITOCHONDRION'='MITOCHONDRIA')
 
 
 table(dcLOPIT_loc$classification )
 ```
 
+
+
+
+
 ```{r}
-hLOPIT_loc_vs_HPA <- HPA %>% filter(hpa_confidence %in% c('Approved')) %>%
-  merge(hLOPIT_loc, by.y='row.names', by.x='uniprotswissprot', all.y=TRUE)
+table(HPA$hpa_confidence)
+hpa_confidence_levels <- list('Approved', 'Supported', 'Enhanced', 'Uncertain')
+names(hpa_confidence_levels) <- hpa_confidence_levels
 
-hLOPIT_loc_vs_HPA_agreement <- hLOPIT_loc_vs_HPA %>%
-  filter(classification!='unknown', !is.na(allocation_LOPIT_classes)) %>%
-  group_by(uniprotswissprot, classification) %>%
-  summarise(agreement=length(intersect(allocation_LOPIT_classes, classification))>0)
+lopits <- list(dcLOPIT_loc, hLOPIT_loc, dLOPIT_loc)
+names(lopits) <- c('LOPIT-DC', 'hyperLOPIT', 'dLOPIT')
+```
 
-hLOPIT_loc_vs_HPA_agreement_summarised <- hLOPIT_loc_vs_HPA_agreement %>%
-  group_by(classification, agreement) %>% tally() %>%
-  pivot_wider(names_from=agreement, values_from=n)
 
-hLOPIT_loc_vs_HPA_agreement %>%
-  group_by(agreement) %>% tally() %>%
-  pivot_wider(names_from=agreement, values_from=n) %>%
-  mutate(fraction_TRUE=`TRUE`/(`TRUE`+`FALSE`))
+```{r}
+lopits <- lapply(lopits, function(x) filter(x, !classification %in% c('unknown', 'Undefined')))
+common_proteins <- Reduce('intersect', lapply(lopits, rownames))
+print(length(common_proteins))
+lopits_common <- lapply(lopits, function(x) x[common_proteins,])
 ```
 
 ```{r}
-dcLOPIT_loc_vs_HPA <- HPA %>% filter(hpa_confidence %in% c('Approved')) %>%
-  merge(dcLOPIT_loc, by.y='row.names', by.x='uniprotswissprot', all.y=TRUE)
 
-dcLOPIT_loc_vs_HPA_agreement <- dcLOPIT_loc_vs_HPA %>%
-  filter(classification!='unknown', !is.na(allocation_LOPIT_classes)) %>%
+get_agreement_lopit_hpa <- function(hpa_loc, lopit_loc){
+  lopitloc_vs_hpa <- hpa_loc %>%
+    merge(lopit_loc, by.y='row.names', by.x='uniprotswissprot', all.y=TRUE)  
+  
+  lopitloc_vs_hpa_agreement <- lopitloc_vs_hpa %>%
+  filter(!is.na(allocation_LOPIT_classes)) %>%
   group_by(uniprotswissprot, classification) %>%
   summarise(agreement=length(intersect(allocation_LOPIT_classes, classification))>0)
+  
+  lopitloc_vs_hpa_agreement %>%
+    group_by(agreement, classification) %>% tally() %>%
+    pivot_wider(names_from=agreement, values_from=n) %>%
+    mutate("TRUE"=replace_na(`TRUE`, 0),
+           "FALSE"=replace_na(`FALSE`, 0)) %>%
+    mutate(fraction_TRUE=`TRUE`/(`TRUE`+`FALSE`),
+           total=`TRUE`+`FALSE`)
+}
 
-dcLOPIT_loc_vs_HPA_agreement_summarised <- dcLOPIT_loc_vs_HPA_agreement %>%
-  group_by(classification, agreement) %>% tally() %>%
-  pivot_wider(names_from=agreement, values_from=n)
+get_all_lopit_vs_hpa <- function(lopits){
+  all_lopit_vs_hpa <- lapply(hpa_confidence_levels, function(confidence_level){
+    
+    confidence_level_ix <- which(hpa_confidence_levels==confidence_level)
+    keep_confidence_levels <- hpa_confidence_levels[1:confidence_level_ix]
+  
+    lopits %>% lapply(function(lopit_loc){
+      HPA %>% filter(hpa_confidence %in% keep_confidence_levels) %>%
+      get_agreement_lopit_hpa(lopit_loc)  
+    }) %>% bind_rows(.id='LOPIT')
+    
+  }) %>% bind_rows(.id='confidence_level') %>%
+    mutate(confidence_level=factor(confidence_level, levels=hpa_confidence_levels))
+}
 
 
-dcLOPIT_loc_vs_HPA_agreement %>%
-  group_by(agreement) %>% tally() %>%
-  pivot_wider(names_from=agreement, values_from=n) %>%
-  mutate(fraction_TRUE=`TRUE`/(`TRUE`+`FALSE`))
+summarise_all_lopit_vs_hpa <- function(all_lopit_vs_hpa){
+  all_lopit_vs_hpa %>%
+    group_by(confidence_level, LOPIT) %>%
+    summarise('TRUE'=sum(`TRUE`), 'FALSE'=sum(`FALSE`)) %>%
+    mutate(fraction_TRUE=`TRUE`/(`TRUE`+`FALSE`),
+           total=`TRUE`+`FALSE`)
+}
+```
+
+
+```{r, warning=FALSE, message=FALSE}
+all_lopit_vs_hpa <- get_all_lopit_vs_hpa(lopits)
+all_lopit_vs_hpa_summarised <- summarise_all_lopit_vs_hpa(all_lopit_vs_hpa)
+
+all_lopit_common_vs_hpa <- get_all_lopit_vs_hpa(lopits_common)
+all_lopit_common_vs_hpa_summarised <- summarise_all_lopit_vs_hpa(all_lopit_common_vs_hpa)
 
 ```
+
+
+```{r}
+
+plot_all_lopit_vs_hpa_summarised <- function(all_lopit_vs_hpa_summarised){
+  all_lopit_vs_hpa_summarised %>%
+    filter(confidence_level!='Uncertain') %>%
+    ggplot(aes(LOPIT, 100*fraction_TRUE)) +
+    geom_bar(stat='identity', fill='grey80', colour=NA) + 
+    facet_wrap(~confidence_level, nrow=1) +
+    theme_camprot(border=FALSE, base_family='sans', base_size=15) +
+    theme(strip.background=element_blank(), axis.text.x=element_text(angle=45, vjust=1, hjust=1)) +
+    xlab('') +
+    ylab('Agreement with HPA (%)') +
+    ylim(0, 100*(max(all_lopit_vs_hpa_summarised$fraction_TRUE)*1.05)) + 
+    geom_text(aes(y=100*fraction_TRUE/2, label=total), colour='grey20') +
+    geom_text(aes(label=sprintf('%.0f', 100*fraction_TRUE, 0)), vjust=-0.2, colour='grey20')
+}
+
+p <- plot_all_lopit_vs_hpa_summarised(all_lopit_vs_hpa_summarised)
+print(p)
+ggsave('../../../../5_manuscript_figures/Figure_1/hpa/all_conf_levels.png', height=5, width=10)
+ggsave('../../../../5_manuscript_figures/Figure_1/hpa/all_conf_levels.pdf', height=5, width=10)
+
+p <- all_lopit_vs_hpa_summarised %>%
+  filter(confidence_level=='Approved') %>%
+  plot_all_lopit_vs_hpa_summarised() +
+  theme(strip.text=element_blank())
+
+print(p)
+ggsave('../../../../5_manuscript_figures/Figure_1/hpa/Approved.png', height=5, width=5)
+ggsave('../../../../5_manuscript_figures/Figure_1/hpa/Approved.pdf', height=5, width=5)
+
+
+
+p <- plot_all_lopit_vs_hpa_summarised(all_lopit_common_vs_hpa_summarised)
+print(p)
+```
+```{r, fig.height=10, fig.width=8}
+plot_all_lopit_vs_hpa <- function(all_lopit_vs_hpa){
+  all_lopit_vs_hpa %>%
+      filter(confidence_level!='Uncertain') %>%
+      ggplot(aes(LOPIT, 100*fraction_TRUE)) +
+      geom_bar(stat='identity', fill='grey80', colour=NA) +
+      facet_grid(classification~confidence_level) +
+      theme_camprot(border=FALSE, base_family='sans', base_size=12) +
+      theme(strip.background=element_blank(), axis.text.x=element_text(angle=45, vjust=1, hjust=1)) +
+      xlab('') +
+      ylab('Agreement with HPA (%)') +
+      ylim(0, 100*(max(all_lopit_vs_hpa$fraction_TRUE)*1.1)) + 
+      geom_text(aes(y=100*fraction_TRUE/2, label=total), colour='grey20')
+}
+
+plot_all_lopit_vs_hpa(all_lopit_vs_hpa)
+plot_all_lopit_vs_hpa(all_lopit_common_vs_hpa)
+```
+
