@@ -17,6 +17,7 @@ library(MSnbase)
 library(pRolocdata)
 library(dplyr)
 library(tidyr)
+library(camprotR)
 library(ggplot2)
 ```
 
@@ -259,4 +260,5 @@ plot_all_lopit_vs_hpa <- function(all_lopit_vs_hpa){
 plot_all_lopit_vs_hpa(all_lopit_vs_hpa)
 plot_all_lopit_vs_hpa(all_lopit_common_vs_hpa)
 ```
+
 
