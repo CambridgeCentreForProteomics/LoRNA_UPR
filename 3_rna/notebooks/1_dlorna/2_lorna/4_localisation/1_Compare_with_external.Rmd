@@ -51,6 +51,8 @@ proportions_vs_MERFISH <- proportions$transcript %>%
 
 ```{r}
 
+to_cor <- proportions_vs_MERFISH %>% filter(xia_er_sig=='Sig.')
+s_cor <- cor(to_cor$Membrane, to_cor$`log2(Fold-Change).er`, method='spearman')
 
 p <- proportions_vs_MERFISH %>%
   arrange(xia_er_sig) %>%
@@ -62,6 +64,8 @@ p <- proportions_vs_MERFISH %>%
   guides(color = guide_legend(override.aes = list(size = 5) ) ) +
   xlab('LoRNA membrane proportion') +
   ylab('MERFISH ER vs cytoplasm\nlog2(fold-change)') +
+  annotate(geom='text', label=sprintf('Spearmans rho = %.2f', s_cor),
+           x=0, y=Inf, vjust=1, hjust=0, size=5, colour=get_cat_palette(1)) +
   theme(legend.position=c(1, 0.1), legend.justification=c(1, 0.1), legend.box=element_blank())
 
 print(p)
@@ -79,6 +83,10 @@ print(p2)
 ```
 
 ```{r}
+
+to_cor <- proportions_vs_MERFISH %>% filter(xia_nuc_sig=='Sig.')
+s_cor <- cor(to_cor$Nucleus+to_cor$Nucleolus, to_cor$`log2(Fold-Change).nuc`, method='spearman')
+
 p <- proportions_vs_MERFISH %>%
   arrange(xia_er_sig) %>%
   ggplot(aes(Nucleus+Nucleolus, `log2(Fold-Change).nuc`, colour=xia_nuc_sig)) +
@@ -89,6 +97,8 @@ p <- proportions_vs_MERFISH %>%
   guides(color = guide_legend(override.aes = list(size = 5) ) ) +
   xlab('LoRNA nucleus proportion') +
   ylab('MERFISH Nucleus vs cytoplasm\nlog2(fold-change)') +
+  annotate(geom='text', label=sprintf('Spearmans rho = %.2f', s_cor),
+           x=0, y=Inf, vjust=1, hjust=0, size=5, colour=get_cat_palette(1)) +
   theme(legend.position=c(1, 0.05), legend.justification=c(1, 0.05), legend.box=element_blank())
 
 print(p)
@@ -104,9 +114,7 @@ p2 <- ggplot(proportions_vs_MERFISH, aes(xia_nuc_sig, Nucleus+Nucleolus, )) +
 print(p2)
 ```
 
-```{r, fig.height=4, fig.width=8}
-print(p %+% (filter(proportions_vs_MERFISH, biotype.nuc %in% c('protein_coding', 'retained_intron'))) + facet_wrap(~biotype.nuc) + theme(strip.background=element_blank()))
-```
+
 
 
 ```{r}
