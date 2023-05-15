@@ -66,7 +66,7 @@ p <- proportions_vs_MERFISH %>%
   ylab('MERFISH ER vs cytoplasm\nlog2(fold-change)') +
   annotate(geom='text', label=sprintf('Spearmans rho = %.2f', s_cor),
            x=0, y=Inf, vjust=1, hjust=0, size=5, colour=get_cat_palette(1)) +
-  theme(legend.position=c(1, 0.1), legend.justification=c(1, 0.1), legend.box=element_blank())
+  theme(legend.position=c(1, 0.1), legend.justification=c(1, 0.1))
 
 print(p)
 ggsave('../../../../../5_manuscript_figures/Figure_2/merfish/er.png', height=5, width=5)
@@ -99,7 +99,7 @@ p <- proportions_vs_MERFISH %>%
   ylab('MERFISH Nucleus vs cytoplasm\nlog2(fold-change)') +
   annotate(geom='text', label=sprintf('Spearmans rho = %.2f', s_cor),
            x=0, y=Inf, vjust=1, hjust=0, size=5, colour=get_cat_palette(1)) +
-  theme(legend.position=c(1, 0.05), legend.justification=c(1, 0.05), legend.box=element_blank())
+  theme(legend.position=c(1, 0.05), legend.justification=c(1, 0.05))
 
 print(p)
 ggsave('../../../../../5_manuscript_figures/Figure_2/merfish/nuc.png', height=5, width=5)

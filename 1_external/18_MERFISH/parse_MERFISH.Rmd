@@ -19,17 +19,7 @@ library(camprotR)
 library(biomaRt)
 ```
 
-```{r}
-ensembl <- useEnsembl(biomart="ensembl", version=102, dataset="hsapiens_gene_ensembl")
 
-genename2id <- getBM(attributes=c('external_gene_name', 'ensembl_gene_id'), mart = ensembl) %>% unique()
-
-# remove instances where the gene name is mapped to multiple gene ids
-duplicated_gene_name <- genename2id$external_gene_name[duplicated(genename2id$external_gene_name)] %>% unique()
-print(length(duplicated_gene_name))
-
-genename2id <- genename2id %>% filter(!external_gene_name %in% duplicated_gene_name)
-```
 
 ```{r}
 xia_et_al_tx_map <- read.table('./pnas.1912459116.sd01.csv', sep=',', header=1)  %>% filter(!grepl('^Blank', name)) %>% dplyr::select(name, id) %>%
