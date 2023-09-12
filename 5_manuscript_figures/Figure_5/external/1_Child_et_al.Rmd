@@ -17,11 +17,12 @@ fontsize: 11pt
 library(tidyverse)
 library(camprotR)
 library(broom)
+library(ggbeeswarm)
 ```
 
 ```{r}
-proportions_per_rep <- readRDS('../../../3_rna/notebooks/1_dlorna/2_lorna/4_proportional_localisation/results/proportions_per_rep.rds')
-proportions <- readRDS('../../../3_rna/notebooks/1_dlorna/2_lorna/4_proportional_localisation/results/proportions.rds')
+proportions_per_rep <- readRDS('../../../3_rna/notebooks/1_dlorna/2_lorna/3_proportional_localisation/results/proportions_per_rep.rds')
+proportions <- readRDS('../../../3_rna/notebooks/1_dlorna/2_lorna/3_proportional_localisation/results/proportions.rds')
 ```
 
 
@@ -34,27 +35,24 @@ child_et_al_goi_swapped <- names(child_et_al_goi)
 names(child_et_al_goi_swapped) <- child_et_al_goi
 child_et_al_sg_up <- c('HSP90B1', 'CTGF', 'NCL')
 
-
-
-p <- proportions$gene %>%
+p <- proportions_per_rep$gene %>%
   mutate(condition=recode(condition, 'Tg'='UPR', 'DMSO'='Control')) %>%
   filter(id %in% child_et_al_goi) %>%
-  dplyr::select(id, condition, Granule, sd_Granule) %>%
+  dplyr::select(id, condition, Granule) %>%
   rowwise() %>%
   mutate(gene_name=child_et_al_goi_swapped[[id]]) %>%
   mutate(direction=ifelse(gene_name %in% child_et_al_sg_up, 'Accumulated', 'Not accumulated')) %>%
-  mutate(se_Granule=sd_Granule/sqrt(3)) %>%
   ggplot(aes(gene_name, Granule, fill=condition)) +
-  geom_bar(stat='identity', position='dodge') +
-  geom_errorbar(aes(ymin=Granule-se_Granule, ymax=Granule+se_Granule),
-                position=position_dodge(width=1), width=0.3) +
+  stat_summary(geom='bar', position=position_dodge(width=0.7), width=0.7) +
+  geom_quasirandom(dodge.width=0.7, width=0.2, show.legend=FALSE) +
+  stat_summary(geom='errorbar', position=position_dodge(width=0.7), width=0.3) +
   theme_camprot(border=FALSE, base_size=15, base_family='sans') +
   scale_fill_manual(values=get_cat_palette(2), name='') +
   facet_wrap(~direction, nrow=1, scales='free_x') +
   ylim(NA,0.6) +
   theme(strip.background=element_blank()) +
   xlab('') +
-  ylab('LORITO granule proportion') +
+  ylab('LORNA granule proportion') +
   ggtitle('Child et al perinuclear stress granules in UPR') +
   theme(plot.title=element_text(hjust=0.5))
 
