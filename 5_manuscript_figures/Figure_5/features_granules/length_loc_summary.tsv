@@ -1,0 +1,7 @@
+binned_length	n_Cytosol	n_Membrane	n_Nucleus	statistic	p.value	method	alternative	major_localisation
+[  80,  657)	2901	324	813	264668.5	3.71618878861995e-38	Wilcoxon rank sum test with continuity correction	two.sided	Membrane
+[ 657, 1008)	3074	373	585	361592	1.95204003777339e-31	Wilcoxon rank sum test with continuity correction	two.sided	Membrane
+[1008, 1759)	3287	503	415	575826	4.97562061890373e-28	Wilcoxon rank sum test with continuity correction	two.sided	Membrane
+[1759, 2653)	2974	707	343	724554	7.13781695974531e-38	Wilcoxon rank sum test with continuity correction	two.sided	Membrane
+[2653, 4220)	2603	747	327	682340	1.58282594596647e-35	Wilcoxon rank sum test with continuity correction	two.sided	Membrane
+[4220,91667]	1461	913	346	422079	2.5306751623647e-51	Wilcoxon rank sum test with continuity correction	two.sided	Membrane

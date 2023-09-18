@@ -159,8 +159,10 @@ plot_length_vs_granule_reloc <- function(obj){
     ylab('Granule proportion\n(UPR - Control)')
 }
 
-p <- granule_relocalisation$transcript %>%
-  mutate(binned_length=Hmisc::cut2(transcript_length, g=6)) %>%
+to_plot <- granule_relocalisation$transcript %>%
+  mutate(binned_length=Hmisc::cut2(transcript_length, g=6))
+
+p <- to_plot %>%
   plot_length_vs_granule_reloc() +
   geom_text(data=sig, label='*', y=Inf, vjust=1, hjust=-0.2, colour='black', size=10)
 
@@ -195,6 +197,27 @@ granule_relocalisation$gene %>%
 ```
 OK, so a clear relationship between RNA length and relocalisation to granule.
 
+Tabulate the number of RNAs in each category above.
+```{r}
+length_ctrl_loc_n <- to_plot %>%
+  filter(major_localisation %in% c('Cytosol', 'Membrane', 'Nucleus')) %>%
+  group_by(binned_length, major_localisation) %>% tally() %>%
+  mutate(major_localisation=paste0('n_', major_localisation)) %>%
+  pivot_wider(names_from=major_localisation, values_from=n)
+
+print(length_ctrl_loc_n)
+
+length_ctrl_loc_n %>% merge(sig, by='binned_length') %>%
+  write.table(sep='\t',
+              quote=FALSE,
+              row.names=FALSE,
+              file='../../../../../5_manuscript_figures/Figure_5/features_granules/length_loc_summary.tsv')
+
+
+
+
+
+```
 
 
 
@@ -239,6 +262,8 @@ er_ga_genes <- go_human %>%
   unique()
 length(er_ga_genes)
 ```
+
+
 ```{r}
 
 

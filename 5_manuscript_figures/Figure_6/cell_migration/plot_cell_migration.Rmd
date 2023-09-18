@@ -54,7 +54,6 @@ p <- all_assays[[5]] %>%
              colour=condition,
              group=paste(condition, siRNA))) +
   geom_line() +
-  geom_errorbar(aes(ymin=Mean-SD, ymax=Mean+SD)) +
   theme_camprot(base_size=15, border=FALSE, base_family='sans') +
   facet_wrap(~siRNA, scale='free_y') +
   theme(strip.background=element_blank()) +
@@ -265,7 +264,6 @@ p <- all_assays_3j[[2]] %>%
              colour=condition,
              group=paste(condition, siRNA))) +
   geom_line() +
-  geom_errorbar(aes(ymin=Mean-SD, ymax=Mean+SD)) +
   theme_camprot(base_size=15, border=FALSE, base_family='sans') +
   facet_wrap(~siRNA, scale='free_y') +
   theme(strip.background=element_blank()) +

@@ -1,0 +1,7 @@
+AU_bin	n_lncRNA	n_mRNA	statistic	p.value	method	alternative
+[0.240,0.424)	45	3919	61681	0.000518511008665849	Wilcoxon rank sum test with continuity correction	two.sided
+[0.424,0.479)	116	3846	141337	1.6583737569459e-11	Wilcoxon rank sum test with continuity correction	two.sided
+[0.479,0.523)	209	3754	218195	2.94721007799159e-27	Wilcoxon rank sum test with continuity correction	two.sided
+[0.523,0.560)	174	3790	179581	2.65094721893046e-24	Wilcoxon rank sum test with continuity correction	two.sided
+[0.560,0.594)	122	3840	115816	1.71941259632156e-21	Wilcoxon rank sum test with continuity correction	two.sided
+[0.594,0.700]	90	3873	80296	1.97025747016445e-18	Wilcoxon rank sum test with continuity correction	two.sided

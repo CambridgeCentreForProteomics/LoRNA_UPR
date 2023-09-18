@@ -211,6 +211,24 @@ ggsave('../../../../5_manuscript_figures/Figure_5/lncRNA/lncRNA_vs_mRNA_au_conte
 
 
 ```
+Tabulate the number of RNAs in each category above.
+```{r}
+au_content_biotype_n <- to_plot %>% group_by(AU_bin, gene_biotype) %>% tally() %>%
+  mutate(gene_biotype=paste0('n_', gene_biotype)) %>%
+  pivot_wider(names_from=gene_biotype, values_from=n)
+
+print(au_content_biotype_n)
+
+au_content_biotype_n %>% merge(sig,by='AU_bin') %>%
+  dplyr::select(-gene_biotype) %>%
+  write.table(sep='\t',
+              quote=FALSE,
+              row.names=FALSE,
+              file='../../../../5_manuscript_figures/Figure_5/lncRNA/lncRNA_vs_mRNA_au_content_granule_reloc_summary.tsv')
+
+
+
+```
 
 ```{r}
 to_plot %>%
@@ -295,3 +313,19 @@ ggsave('../../../../5_manuscript_figures/Figure_5/lncRNA/lncRNA_vs_mRNA_length_g
 ```
 
 
+Tabulate the number of RNAs in each category above.
+```{r}
+
+transcript_length_biotype_n <- to_plot %>%
+  group_by(transcript_length_bin, gene_biotype) %>% tally() %>%
+  mutate(gene_biotype=paste0('n_', gene_biotype)) %>%
+  pivot_wider(names_from=gene_biotype, values_from=n)
+
+transcript_length_biotype_n %>% merge(sig,by='transcript_length_bin') %>%
+  dplyr::select(-gene_biotype) %>%
+  write.table(sep='\t',
+              quote=FALSE,
+              row.names=FALSE,
+              file='../../../../5_manuscript_figures/Figure_5/lncRNA/lncRNA_vs_mRNA_length_granule_reloc_summary.tsv')
+
+```
