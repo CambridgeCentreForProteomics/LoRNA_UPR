@@ -22,6 +22,10 @@ library(pRoloc)
 library(pRolocdata)
 library(pRolocExt)
 
+
+library(biomaRt)
+library(ggbeeswarm)
+
 ```
 Read in the proportions and dLoRNA quantification
 
@@ -391,9 +395,9 @@ x <- proportions$gene %>%
 print(x %>% filter(x$id %in% x$id[duplicated(x$id)]))
 ```
 
-
+Comparison with Horste et al
 ```{r, warning=FALSE}
-?readxl::read_excel
+
 Horste_el_al_2022 <- readxl::read_excel('../../../../../1_external/3_granules/Horste_el_al_2022/Table_S1_final.xlsx', range='A1:V9156',
                                         col_types=c(rep('guess', 8), 'text', 'text', rep('guess', 12))) %>%
   mutate(classification=ifelse(!is.na(`TMD classification`), `TMD classification`, `Non-TMD_classification`))
@@ -412,7 +416,6 @@ ggplot(Horste_el_al_2022, aes(`classification`, log2(`Partition coefficient (Pco
 ```
 
 ```{r}
-library(biomaRt)
 
 ensembl <- useEnsembl(biomart="ensembl", version=102, dataset="hsapiens_gene_ensembl")
 
@@ -430,16 +433,18 @@ Horste_el_al_2022<- Horste_el_al_2022 %>%
 
 
 ```{r}
-library(ggbeeswarm)
 
-
-p <- proportions$gene %>%
+to_plot <- proportions$gene %>%
   filter(condition=='DMSO') %>%
   mutate('Nucleus'=Nucleus+Nucleolus) %>%
   dplyr::select(id, 'Granule'=Cytosol_Light, Cytosol, Nucleus, Membrane)  %>%
   pivot_longer(cols=-id, names_to='localisation', values_to='proportion') %>%
   merge(Horste_el_al_2022[,c('ensembl_gene_id', 'classification')], by.x='id', by.y='ensembl_gene_id') %>%
-  filter(classification!='NL') %>%
+  filter(classification!='NL')
+
+to_plot %>% group_by(localisation, classification) %>% tally()
+
+p <-  to_plot %>%
   ggplot(aes(localisation, proportion, colour=`classification`, group=interaction(localisation, `classification`))) +
   geom_quasirandom(dodge.width=0.5, size=0.5) +
   geom_boxplot(width=0.25, colour='black', position=position_dodge(width=0.5), notch=TRUE) +
@@ -467,9 +472,11 @@ p <- proportions$gene %>%
 
 ggplot2:::plot.ggplot(p)
 ```
-
 ```{r}
 library(ggtern)
+```
+
+```{r}
 
 for(class in setdiff(unique(Horste_el_al_2022$classification), 'NL')){
   p <- proportions$gene %>%
