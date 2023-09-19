@@ -47,11 +47,16 @@ Before we do the modeling though. A quick demonstration that lncRNAs with more e
 ```{r}
 ribosome_profiling_lncRNA <- readRDS('../../../../1_external/2_ribosome_profiling/out/zeng_2018_lincRNA_ribosome_profiling.rds')
 
-p <- dlorna_cyt_proportions %>%
-  merge(ribosome_profiling_lncRNA, by='ensembl_transcript_id') %>%
+to_plot <- dlorna_cyt_proportions %>%
+  merge(ribosome_profiling_lncRNA, by='ensembl_transcript_id')
+
+to_plot_n <- to_plot %>% group_by(U2OS) %>% tally()
+
+p <- to_plot %>%
   ggplot(aes(U2OS, Cytosol)) +
   geom_boxplot(notch=TRUE) +
-  theme_camprot(border=FALSE, base_size=15, base_family='sans')
+  theme_camprot(border=FALSE, base_size=15, base_family='sans') +
+  geom_text(data=to_plot_n, aes(y=1, label=n), hjust=0.5, vjust=0)
 
 print(p)
 ggsave('../../../../5_manuscript_figures/Figure_3/lncRNA_model/orfs.png', width=3.5, height=3.5)

@@ -476,6 +476,13 @@ print(p)
 ggsave('../../../../../5_manuscript_figures/Figure_2/compare_external/mem_box.png')
 ggsave('../../../../../5_manuscript_figures/Figure_2/compare_external/mem_box.pdf')
 ```
+Get n numbers for above figure
+```{r}
+to_plot_mem %>% filter(is.finite(log2.enrichment)) %>%
+  group_by(er_cyt_ribo_over_1.5=log2.enrichment>log2(1.5), method) %>%
+  tally()
+```
+
 
 Plot correlations
 ```{r}
