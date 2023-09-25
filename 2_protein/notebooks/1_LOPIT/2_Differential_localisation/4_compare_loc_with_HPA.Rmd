@@ -3,15 +3,22 @@ title: "Compare classifications with HPA"
 author:
   - name: "Tom Smith"
     affiliation: "Cambridge Centre for Proteomics"
+  - name: "Lisa Breckels"
+    affiliation: "Cambridge Centre for Proteomics"
 date: "`r format(Sys.time(), '%d %B, %Y')`"
 abstract: | 
-  Here, we compare the protein subcellular localisation classification with HPA
+  Here, we compare the protein subcellular localisation classification with HPA.
 output:
   pdf_document:
   html_notebook: default
 geometry: margin=1in
 fontsize: 11pt
+editor_options: 
+  chunk_output_type: inline
 ---
+
+First let's load the packages we need for the analysis -
+
 ```{r}
 library(MSnbase)
 library(pRolocdata)
@@ -19,34 +26,89 @@ library(dplyr)
 library(tidyr)
 library(camprotR)
 library(ggplot2)
+library(mcclust)
 ```
 
-```{r}
+- Read in all LOPIT datasets. These are the protein level dLOPIT dataset and 
+two previously published datasets from Geladaki et al 2018 which are available
+in `pRolocdata` from using the hyperLOPIT and LOPIT-DC technologies
+- We also read in data from the Human Protein Atlas (HPA) downloaded from
+https://www.proteinatlas.org/about/download on 3rd May 2023.
+- In the following code chunks we re-code the names of the markers in each 
+dataset to a common format compatible with both LOPIT and HPA annotations.
 
-dLOPIT <- readRDS('../../out/combined_protein_res_inc_bandle_loc.rds')$DMSO 
-dLOPIT_loc <- fData(dLOPIT)[,'bandle_alloc',drop=FALSE] %>% filter(!is.na(bandle_alloc))
-dLOPIT_loc$classification <- recode(dLOPIT_loc$bandle_alloc,
+```{r}
+## ----------------------------------------------------------------------------
+## -----------------------Read in dLOPIT --------------------------------------
+## ----------------------------------------------------------------------------
+
+## read the dLOPIT data
+dlopit <- readRDS('../../out/combined_protein_res_inc_bandle_loc.rds')$DMSO
+
+## select columns with results
+dl <- fData(dlopit)[, c("markers","bandle_alloc"), drop = FALSE]
+mrk <- dl$markers[dl$markers != "unknown"]
+
+## add the markers to the allocation results (to match notation in all pRolocdata sets, we filter these further down) 
+dl$bandle_alloc[is.na(dl$bandle_alloc)] <- mrk
+
+## recode the organelle names to match the HPA terms
+dl$classification <- recode(dl$bandle_alloc,
                                     'NUCLEOPLASM-1'='NUCLEUS',
                                     'NUCLEOPLASM-2'='NUCLEUS',
                                     'PROTEIN COMPLEX'='CYTOSOL',
                                     'RIBOSOME'='CYTOSOL',
                                     'MITOCHONDRION'='MITOCHONDRIA')
+## remove any proteins which are classes as "Undefined" as these can't be compared to the HPA
+dl <- filter(dl, classification != "Undefined")
+dl %>% head
+
+## ----------------------------------------------------------------------------
+## ---------------------Read in hyperLOPIT data--------------------------------
+## ----------------------------------------------------------------------------
+
+## read in the hyperLOPIT U2OS data from pRolocdata
+data("hyperLOPITU2OS2018")
+hl <- fData(hyperLOPITU2OS2018)[, c("markers", "final.assignment"), drop = FALSE] 
+hl$classification <- recode(hl$final.assignment,
+                                    'GA'='GOLGI',
+                                    'CHROMATIN'='NUCLEUS',
+                                    'RIBOSOME 40S'='CYTOSOL',
+                                    'RIBOSOME 60S'='CYTOSOL',
+                                    'PROTEASOME'='CYTOSOL',
+                                    'MITOCHONDRION'='MITOCHONDRIA')
+hl <- filter(hl, classification != "unknown")
+hl %>% head
+
+## ----------------------------------------------------------------------------
+## ---------------------Read in LOPIT-DC data ---------------------------------
+## ----------------------------------------------------------------------------
+
+## read in the lopit-DC U2OS data from pRolocdata
+data("lopitdcU2OS2018")
+dc <- fData(lopitdcU2OS2018)[, c("markers", "final.assignment"), drop = FALSE] 
+dc$classification <- recode(dc$final.assignment,
+                                    'GA'='GOLGI',
+                                    'NUCLEUS/CHROMATIN'='NUCLEUS',
+                                    'RIBOSOME'='CYTOSOL',
+                                    'PROTEASOME'='CYTOSOL',
+                                    'MITOCHONDRION'='MITOCHONDRIA')
+dc <- filter(dc, classification != "unknown")
+dc %>% head
 ```
 
-```{r}
-HPA <- readRDS('../../../../1_external/19_HPA/out/hpa_allocations.rds')
+In the next code chunk we re-code HPA annotations to the same naming scheme as LOPIT.
 
-```
-
-Note that the HPA annotations do not all line up with the marker classes we are using in dLOPIT.
 ```{r}
-table(HPA$allocation)
-table(dLOPIT_loc$classification)
-```
-Below, we update the HPA annotations so that they match our marker classes. In some cases, e.g "Actin filaments" there is no equivalent in our marker class so we will simply ignore this classification
-```{r}
+## ----------------------------------------------------------------------------
+## ---------------------Read in HPA data --------------------------------------
+## ----------------------------------------------------------------------------
 
-HPA <- HPA %>%
+## get HPA locations and make the same annotation labels as what we have in our data
+locs <- c("CYTOSOL", "ER", "GOLGI", "LYSOSOME", "MITOCHONDRIA", 
+          "NUCLEUS", "PEROXISOME", "PM")
+hpa <- readRDS('../../../../1_external/19_hpa/out/hpa_allocations.rds')
+hpa <- hpa %>%
   mutate(allocation_LOPIT_classes=recode(
     allocation,
     'Cytoplasmic bodies'='CYTOSOL',
@@ -64,201 +126,601 @@ HPA <- HPA %>%
     "Nucleus"="NUCLEUS",
     "Peroxisomes"="PEROXISOME",
     "Plasma membrane"="PM")) %>%
-  filter(allocation_LOPIT_classes %in% unique(dLOPIT_loc$bandle_alloc))
-
-table(HPA$allocation_LOPIT_classes)
+  filter(allocation_LOPIT_classes %in% locs) %>% 
+  filter(hpa_confidence != "Uncertain") %>% 
+  mutate(hpa_confidence = factor(hpa_confidence, levels = c("Enhanced", "Supported", "Approved"))) %>% 
+  arrange(factor(hpa_confidence, levels = c("Enhanced", "Supported", "Approved"))) %>% 
+  mutate(hpa_confidence = as.character(hpa_confidence))
+table(hpa$allocation_LOPIT_classes)
+table(hpa$hpa_confidence)
+hpa %>% head
+hpa %>% tail
 ```
 
+We next define a function to find if the HPA image annotation matches each dataset
 
 ```{r}
-dLOPIT_loc_vs_HPA <- HPA %>% filter(hpa_confidence %in% c('Approved')) %>%
-  merge(dLOPIT_loc, by.y='row.names', by.x='uniprotswissprot', all.y=TRUE)
-```
+## ----------------------------------------------------------------------------
+## comparePredictions
+## ----------------------------------------------------------------------------
+## This function compares a data.frame of classification results
+## from LOPIT/BANDLE classification against the HPA annotation.
+##    df:  data.frame of results (accession numbers as rownames), classification in column
+##    col: name of the column containing the classification results to compare to the HPA
+##    na.rm: logical defining if we should remove proteins with no annotation available 
+##           in the HPA. Default is TRUE.
+## ----------------------------------------------------------------------------
+comparePredictions <- function(df, 
+                               col = "classification", 
+                               na.rm = TRUE) {
+  ## init
+  hpa_class <- vector("character")
+  hpa_level <- vector()
+  res_tf <- vector("logical")
 
-```{r}
+  ## get vector of predictions for LOPIT data
+  ids <- rownames(df)
+  preds <- df[, col]
+  names(preds) <- ids
 
-dLOPIT_loc_vs_HPA_agreement <- dLOPIT_loc_vs_HPA %>%
-  filter(classification!='Undefined', !is.na(allocation_LOPIT_classes)) %>%
-  group_by(uniprotswissprot, classification) %>%
-  summarise(agreement=length(intersect(allocation_LOPIT_classes, classification))>0)
-```
-
-```{r}
-dLOPIT_loc_vs_HPA_agreement_summarised <- dLOPIT_loc_vs_HPA_agreement %>% group_by(classification, agreement) %>% tally() %>%
-  pivot_wider(names_from=agreement, values_from=n)
-
-dLOPIT_loc_vs_HPA_agreement %>%
-  group_by(agreement) %>% tally() %>%
-  pivot_wider(names_from=agreement, values_from=n) %>%
-  mutate(fraction_TRUE=`TRUE`/(`TRUE`+`FALSE`))
-```
-
-```{r}
-data(lopitdcU2OS2018)
-data(hyperLOPITU2OS2018)
-```
-
-```{r}
-table(fData(hyperLOPITU2OS2018)$final.assignment)
-
-hLOPIT_loc <- fData(hyperLOPITU2OS2018)[,'final.assignment',drop=FALSE] %>% filter(!is.na(final.assignment))
-hLOPIT_loc$classification <- recode(hLOPIT_loc$final.assignment,
-                                    'GA'='GOLGI',
-                                    'CHROMATIN'='NUCLEUS',
-                                    'RIBOSOME 40S'='CYTOSOL',
-                                    'RIBOSOME 60S'='CYTOSOL',
-                                    'PROTEASOME'='CYTOSOL',
-                                    'MITOCHONDRION'='MITOCHONDRIA')
-
-  
-table(hLOPIT_loc$classification )
-```
-
-```{r}
-table(fData(lopitdcU2OS2018)$final.assignment)
-
-dcLOPIT_loc <- fData(lopitdcU2OS2018)[,'final.assignment',drop=FALSE] %>% filter(!is.na(final.assignment))
-dcLOPIT_loc$classification <- recode(dcLOPIT_loc$final.assignment,
-                                    'GA'='GOLGI',
-                                    'NUCLEUS/CHROMATIN'='NUCLEUS',
-                                    'RIBOSOME'='CYTOSOL',
-                                    'PROTEASOME'='CYTOSOL',
-                                    'MITOCHONDRION'='MITOCHONDRIA')
-
-
-table(dcLOPIT_loc$classification )
-```
-
-
-
-
-
-```{r}
-table(HPA$hpa_confidence)
-hpa_confidence_levels <- list('Approved', 'Supported', 'Enhanced', 'Uncertain')
-names(hpa_confidence_levels) <- hpa_confidence_levels
-
-lopits <- list(dcLOPIT_loc, hLOPIT_loc, dLOPIT_loc)
-names(lopits) <- c('LOPIT-DC', 'hyperLOPIT', 'dLOPIT')
-```
-
-
-```{r}
-lopits <- lapply(lopits, function(x) filter(x, !classification %in% c('unknown', 'Undefined')))
-common_proteins <- Reduce('intersect', lapply(lopits, rownames))
-print(length(common_proteins))
-lopits_common <- lapply(lopits, function(x) x[common_proteins,])
-```
-
-```{r}
-
-get_agreement_lopit_hpa <- function(hpa_loc, lopit_loc){
-  lopitloc_vs_hpa <- hpa_loc %>%
-    merge(lopit_loc, by.y='row.names', by.x='uniprotswissprot', all.y=TRUE)  
-  
-  lopitloc_vs_hpa_agreement <- lopitloc_vs_hpa %>%
-  filter(!is.na(allocation_LOPIT_classes)) %>%
-  group_by(uniprotswissprot, classification) %>%
-  summarise(agreement=length(intersect(allocation_LOPIT_classes, classification))>0)
-  
-  lopitloc_vs_hpa_agreement %>%
-    group_by(agreement, classification) %>% tally() %>%
-    pivot_wider(names_from=agreement, values_from=n) %>%
-    mutate("TRUE"=replace_na(`TRUE`, 0),
-           "FALSE"=replace_na(`FALSE`, 0)) %>%
-    mutate(fraction_TRUE=`TRUE`/(`TRUE`+`FALSE`),
-           total=`TRUE`+`FALSE`)
-}
-
-get_all_lopit_vs_hpa <- function(lopits){
-  all_lopit_vs_hpa <- lapply(hpa_confidence_levels, function(confidence_level){
-    
-    confidence_level_ix <- which(hpa_confidence_levels==confidence_level)
-    keep_confidence_levels <- hpa_confidence_levels[1:confidence_level_ix]
-  
-    lopits %>% lapply(function(lopit_loc){
-      HPA %>% filter(hpa_confidence %in% keep_confidence_levels) %>%
-      get_agreement_lopit_hpa(lopit_loc)  
-    }) %>% bind_rows(.id='LOPIT')
-    
-  }) %>% bind_rows(.id='confidence_level') %>%
-    mutate(confidence_level=factor(confidence_level, levels=hpa_confidence_levels))
-}
-
-
-summarise_all_lopit_vs_hpa <- function(all_lopit_vs_hpa){
-  all_lopit_vs_hpa %>%
-    group_by(confidence_level, LOPIT) %>%
-    summarise('TRUE'=sum(`TRUE`), 'FALSE'=sum(`FALSE`)) %>%
-    mutate(fraction_TRUE=`TRUE`/(`TRUE`+`FALSE`),
-           total=`TRUE`+`FALSE`)
+  ## see if we have a match with the HPA image data
+  for (i in seq_along(ids)) {
+  res <- hpa %>% 
+    filter(uniprotswissprot == ids[i]) %>% 
+    select(hpa_confidence, allocation_LOPIT_classes)
+  # tmp[[i]] <- res
+  if (nrow(res) > 0) {   # if the image data is available check if it agrees
+    .res <- res$allocation_LOPIT_classes
+    .lev <- res$hpa_confidence
+    res_tf[i] <- preds[i] %in% .res
+    if (res_tf[i]) {      # terms agree
+      ind <- match(preds[i], .res) 
+      hpa_class[i] <- .res[ind]
+      hpa_level[i] <- .lev[ind]
+    } else {              # terms do not agree
+      set.seed(1)
+      hpa_class[i] <- sample(.res, size = 1)
+      hpa_level[i] <- sample(.lev, size = 1)
+    }
+  } else {
+    hpa_class[i] <- NA 
+    res_tf[i] <- NA
+    hpa_level[i] <- NA
+    }
+  }
+  ## create a data.frame of results
+  df_res <- data.frame(mrk = df$markers,
+                       lev = hpa_level,
+                       hpa = hpa_class,
+                       dl = preds,
+                       tf = res_tf, 
+                       row.names = ids)
+  if (na.rm) df_res <- df_res[!is.na(df_res$tf), ]
+  return(df_res)
 }
 ```
 
+- We now run the `comparePredictions` function on each dataset
+- The LOPIT results are stored in `data.frames` and put into a `list` for 
+ease of coding
+- We then tabulate the output
+- For each dataset we have an output `data.frame` displaying the protein
+accessions numbers. `mrk` = denotes if the protein is a marker protein, `lev`
+denotes the HPA evidence level, `hpa`= the annotation recorded by the HPA at 
+the given evidence level, `dl` = the annotation from LOPIT, `tf` = logical,
+does the annotation agree between LOPIT and the HPA.
 
-```{r, warning=FALSE, message=FALSE}
-all_lopit_vs_hpa <- get_all_lopit_vs_hpa(lopits)
-all_lopit_vs_hpa_summarised <- summarise_all_lopit_vs_hpa(all_lopit_vs_hpa)
+```{r}
+## put LOPIT results into a list
+lopits <- list(dl, hl, dc)
+names(lopits) <- c("dLOPIT", "hyperLOPIT", "LOPIT-DC")
 
-all_lopit_common_vs_hpa <- get_all_lopit_vs_hpa(lopits_common)
-all_lopit_common_vs_hpa_summarised <- summarise_all_lopit_vs_hpa(all_lopit_common_vs_hpa)
+## apply the "comparePredictions" function to see our results match the HPA
+res <- lapply(lopits, comparePredictions)
+names(res) <- names(lopits)
 
+## Output results are a list, where each index refers to the LOPIT expt.
+res[[1]] %>% head
+res[[2]] %>% head
+res[[3]] %>% head
+```
+
+- Make a note of the number of proteins we have in our data for which we have
+evidence from the HPA
+
+```{r}
+(num_prots <- lapply(res, nrow))
+```
+
+- Calculate concordance. 
+- In the next code chunk we define a function `getAgreement` to calculate the 
+agreement (concordance) between our LOPIT data and the HPA data.
+
+```{r}
+## ----------------------------------------------------------------------------
+## getAgreement 
+## ----------------------------------------------------------------------------
+## Get agreement between HPA data levels and LOPIT models
+##    df: data.frame of LOPIT results
+##    support: HPA evidence level
+##    concordance: logical. Default is TRUE. If FALSE number of TRUE is reported.
+## ----------------------------------------------------------------------------
+getAgreement <- function(df, 
+                         support = c("Approved", "Enhanced", "Supported"),
+                         concordance = TRUE
+                         ) {
+  df <- df %>% filter(lev %in% support)
+  res1_true <- table(df[, "tf"])[2]
+  res2_true <- table(df[df$mrk == "unknown", "tf"])[2]
+  res3_true <- table(df[df$mrk != "unknown", "tf"])[2]
+  res1 <- res1_true/nrow(df)
+  res2 <- res2_true/nrow(df[df$mrk == "unknown", ])
+  res3 <- res3_true/nrow(df[df$mrk != "unknown", ])
+  if (concordance)
+    res <- c(res1, res2, res3)
+  else
+    res <- c(res1_true, res2_true, res3_true)
+  names(res) <- c("all", "only_predictions", "only_markers")
+  return(res)
+}
+```
+
+- Calculate the agreement for each confidence level available in the HPA
+
+```{r}
+## All levels
+all_levs <- lapply(res, getAgreement)
+## Enhanced only
+enhanced_levs <- lapply(res, getAgreement, support = "Enhanced")
+## Approved only
+supported_levs <- lapply(res, getAgreement, support = "Supported")
+## Approved only
+approved_levs <- lapply(res, getAgreement, support = "Approved")
+
+## Tabulate results
+concord_tbls <- lapply(seq_along(lopits), function(x) 
+  cbind(all = all_levs[[x]], 
+        Enhanced = enhanced_levs[[x]], 
+        Supported = supported_levs[[x]], 
+        Approved = approved_levs[[x]]))
+names(concord_tbls) <- names(lopits)
+
+concord_tbls
+```
+
+- In the dLOPIT data we have `r num_prots[[1]]` proteins that have information available in 
+the HPA (including marker proteins)
+- Marker proteins are curated by Cambridge Centre for Proteomics from the literature
+and Uniprot. Whilst Uniprot annotations may originate from databases such as the
+HPA, the HPA was not used a direct source of information on which to inform
+markers. When we examine the overlap between HPA and our marker protein
+annotations it is `r round(concord_tbls$dLOPIT["only_markers", "all"]*100)`% see
+`concord_tbls$dLOPIT` in the above code chunk.
+- Concordance for non-marker proteins (denoted `only_predictions` in the code below) 
+which have been assigned using `bandle`have concordance of 
+`r round(concord_tbls$dLOPIT["only_predictions", "all"]*100)`% for all terms,  
+`r round(concord_tbls$dLOPIT["only_predictions", "Enhanced"]*100)`% for only 
+enhanced terms (the highest level of confidence), 
+`r round(concord_tbls$dLOPIT["only_predictions", "Supported"]*100)`% for 
+supported and `r round(concord_tbls$dLOPIT["only_predictions", "Approved"]*100)`% 
+for approved terms (the lowest level of confidence).
+- In the next code chunk we create null models for each LOPIT dataset which 
+we can use to compare against our results
+
+
+First let's plot our results so far -
+
+```{r, fig.width=9, fig.height=6}
+par(mfrow = c(1, 3))
+barplot(concord_tbls$dLOPIT[1, ]*100, 
+        ylab = "Agreement with the HPA (%)", 
+        ylim = c(0, 100), 
+        main = "dLOPIT (all proteins)", 
+        xlab = "HPA evidence level")
+
+barplot(concord_tbls$dLOPIT[2, ]*100, 
+        ylab = "Agreement with the HPA (%)", 
+        ylim = c(0, 100), 
+        main = "dLOPIT (only predictions)", 
+        xlab = "HPA evidence level")
+
+barplot(concord_tbls$dLOPIT[3, ]*100, 
+        ylab = "Agreement with the HPA (%)", 
+        ylim = c(0, 100), 
+        main = "dLOPIT (only markers)", 
+        xlab = "HPA evidence level")
+```
+
+- In the next code chunk we define a funtion to create a null distribution for 
+each LOPIT dataset on which to compare to give some context to the observed 
+agreement.
+- The null generates randomly distributed proteins across compartments with the 
+number of proteins in each compartment corresponding to the observed number in 
+each experiment.
+- A null is created for each evidence level, and the adjusted rand index, agreement
+and number of correctly predicted proteins over 1000 samples is calculated.
+
+```{r}
+## ----------------------------------------------------------------------------
+## generateNull
+## ----------------------------------------------------------------------------
+## Generates randomly distributed proteins across compartments with 
+## the number of proteins in each compartment corresponding to the observed number 
+## in each experiment.
+##    dat:  data.frame of results generated from getAgreement function
+##    iter: sample size
+##    col:  name of column containing the LOPIT results
+## ----------------------------------------------------------------------------
+generateNull <- function(dat, iter = 1000, col = "dl") {
+  # initilize
+  n <- nrow(dat)
+  mrk_tbl <- table(dat[, col]) # LOPIT results are found in column called "dl"
+  (prop_terms <- mrk_tbl/n)
+  (terms <- names(mrk_tbl))
+  out_ari <- out_null <- vector()
+  out_true <- logical()
+
+  ## set up sampling
+  for (i in 1:iter) {
+    set.seed(i)
+    x <- sample(terms, n, replace=TRUE, prob = prop_terms) # generate random classification
+    df_y <- data.frame(markers = dat$mrk, classification = x)
+    rownames(df_y) <- rownames(dat)
+    res_y <- comparePredictions(df = df_y)
+    y <- res_y$hpa
+    out_ari[i] <- arandi(x, y)
+    out_null[i] <- table(x == y)[2]/n
+    out_true[i] <- table(x == y)[2]
+  }
+  df <- data.frame(ari = out_ari,
+                   null = out_null,
+                   tf = out_true)
+  rownames(df) <- paste0("iteration", 1:iter)
+  return(df)
+}
+
+## ----------------------------------------------------------------------------
+## getNullStats
+## ----------------------------------------------------------------------------
+## Collates reuslts of generateNull into a data.frame to
+## be passed to ggplot for visualisation
+##    data:  data.frame of results generated from getAgreement function
+##    n:     sample size
+## ----------------------------------------------------------------------------
+getNullStats <- function(data, n = 1000) {
+  
+  ## Initialize objects
+  null_stats <- vector("list", 4)
+  lev_ind <- c("Enhanced", "Supported", "Approved")
+  
+  ## only evaluate predictions, don't include markers
+  dat <- data %>% filter(mrk == "unknown")
+  null_stats[[1]] <- generateNull(dat, iter = n)
+  null_stats[[1]]$n <- nrow(dat)
+  for (j in seq_along(lev_ind)) {
+    null_dat <- dat %>% filter(lev == lev_ind[j])
+    null_stats[[j + 1]] <- generateNull(null_dat, iter = n)
+    null_stats[[j + 1]]$n <- nrow(null_dat)
+  }
+  names(null_stats) <- c("all", lev_ind)
+  col_means <- lapply(null_stats, colMeans)
+  col_sd <- lapply(null_stats, function(z) apply(z, 2, sd))
+  null_df <- do.call(data.frame, col_means) %>% `colnames<-`(c("all", lev_ind))
+  null_sd <- do.call(data.frame, col_sd) %>% `colnames<-`(c("all", lev_ind))
+
+  ## structure the results
+  null_long <- null_df %>% tibble::rownames_to_column("metric")
+  sd_long <- null_sd %>% tibble::rownames_to_column("metric")
+  null_long <- gather(null_long, hpa, mean, all:Approved)
+  sd_long <- gather(sd_long, hpa, sd, all:Approved)
+  null_long <- cbind(null_long, proteins = "only_predictions")
+  sd_long <- cbind(sd_long, proteins = "only_predictions")
+  null_long <- cbind(null_long, sd = sd_long$sd)
+  return(list(summary = null_long, 
+              raw = null_stats))
+}
+```
+
+Let's now generate the models for all datasets by `lapply`ing over the 
+list of datasets.
+
+```{r, eval=FALSE}
+get_models <- lapply(res, getNullStats)      # this takes approx 1hr to run on 16 core machine
+# save(get_models, file = "../../out/hpa_null_models.rda")  # save the data
+# load("get_models.rda", verbose = TRUE)     # load saved data
+```
+
+Now we have our models, let's re-structure the results so we can plot using
+`ggplot2`.
+
+```{r}
+## Load null models
+load("../../out/hpa_null_models.rda", verbose = TRUE)
+
+## Extract summary data
+null_summaries <- lapply(get_models, "[[", 1)
+
+## Extract raw null data
+null_raw <- lapply(get_models, "[[", 2)
+
+## Reshape data for ggplot
+rb <- vector("list", length(null_raw))
+for (j in seq_along(null_raw)) {
+  for (i in seq_along(null_raw[[j]])) {
+  null_raw[[j]][[i]][, "method"] <- names(null_raw)[j]
+  null_raw[[j]][[i]][, "hpa"] <- names(null_raw[[j]])[i]
+  }
+  rb[[j]] <- do.call(rbind, null_raw[[j]])
+}
+null_dat <- do.call(rbind, rb)
+```
+
+- Calculate the true ARI for all HPA evidence levels and sets of proteins
+
+```{r}
+## ----------------------------------------------------------------------------
+## getARI
+## ----------------------------------------------------------------------------
+## Takes a data.frame of classification results as input and compares them with 
+## the HPA by computing the ARI.
+## ----------------------------------------------------------------------------
+getARI <- function(df, support = c("Approved", "Enhanced", "Supported")) {
+  lev <- c("Approved", "Enhanced", "Supported")
+  df <- df %>% filter(lev %in% support)
+  res1 <- df$dl
+  res2 <- df$hpa
+  ## calcualte ari for all proteins
+  true_ari1 <- arandi(res1, res2)
+  ## caluclate for only predictions (no markers)
+  ind <- which(df$mrk == "unknown")
+  true_ari2 <- arandi(res1[ind], res2[ind])
+  ## calcualate for only markers (for comparison)
+  ind <- which(df$mrk != "unknown")
+  true_ari3 <- arandi(res1[ind], res2[ind])
+  res <- c(true_ari1, true_ari2, true_ari3)
+  names(res) <- c("all", "only_predictions", "only_markers")
+  return(res)
+}
+```
+
+Calculate the ARI
+
+```{r}
+## All level
+all_levs_ari <- getARI(res$dLOPIT)
+## Enhanced only
+enhanced_levs_ari <- getARI(res$dLOPIT, support = "Enhanced")
+## Supported only
+supported_levs_ari <- getARI(res$dLOPIT, support = "Supported")
+## Approved only
+approved_levs_ari <- getARI(res$dLOPIT, support = "Approved")
+## results as a df
+df_ari <- cbind(all = all_levs_ari,
+                enhanced = enhanced_levs_ari,
+                supported = supported_levs_ari, 
+                approved = approved_levs_ari)
 ```
 
 
-```{r}
+- The `getResults` function arranges and collates all our results for `ggplot2`
 
-plot_all_lopit_vs_hpa_summarised <- function(all_lopit_vs_hpa_summarised){
-  all_lopit_vs_hpa_summarised %>%
-    filter(confidence_level!='Uncertain') %>%
-    ggplot(aes(LOPIT, 100*fraction_TRUE)) +
-    geom_bar(stat='identity', fill='grey80', colour=NA) + 
-    facet_wrap(~confidence_level, nrow=1) +
-    theme_camprot(border=FALSE, base_family='sans', base_size=15) +
-    theme(strip.background=element_blank(), axis.text.x=element_text(angle=45, vjust=1, hjust=1)) +
+```{r}
+## ----------------------------------------------------------------------------
+## getResults: collate data for ggplot
+## ----------------------------------------------------------------------------
+getResults <- function(res, nulls) {
+  ## wrangle data into table for plotting
+  df_x <- vector("list", length(res))
+  for (i in seq_along(res)) {
+    df <- data.frame(concord_tbls[[i]]) %>% tibble::rownames_to_column("proteins")
+    (df <- gather(df, hpa, concordance, all:Approved))
+    df <- df %>% arrange(proteins, hpa)
+    ## get number of proteins in for each HPA level
+    x_all <- res[[i]] %>%  
+      group_by(lev) %>% 
+      count() 
+    x_all <- c(x_all$n, sum(x_all$n))
+    x_mrk <- res[[i]] %>%
+      group_by(lev, unknowns = (mrk == "unknown")) %>% 
+      count() %>% 
+      filter(unknowns == FALSE) 
+    x_mrk <- c(x_mrk$n, sum(x_mrk$n))
+    x_pred <- res[[i]] %>%
+      group_by(lev, unknowns = (mrk == "unknown")) %>% count() %>% 
+      filter(unknowns == TRUE) 
+    x_pred <- c(x_pred$n, sum(x_pred$n))
+    df_x[[i]] <- cbind(lopit = names(res)[i], df, n = c(x_all, x_mrk, x_pred))
+  }
+  df <- do.call(rbind, df_x)
+  df$hpa <- factor(df$hpa, levels = c("all", c("Enhanced", "Supported", "Approved")))
+  df <- df %>% filter(proteins == "only_predictions")
+  df$sd <- NA
+  df <- df[, c(1:4, 6, 5)]
+  ## now add null model data
+  for (i in seq_along(nulls)) {
+    x_null <- nulls[[i]] %>% filter(metric == "null")
+    null_n <- nulls[[i]] %>% filter(metric == "n") %>% select(n = mean)
+    x_null <- cbind(x_null[, c("metric", "proteins", "hpa", "mean", "sd")], null_n)
+    names(x_null) <- c("lopit", "proteins", "hpa", "concordance", "sd", "n")
+    x_null[, "lopit"] <- paste0("null_", names(res)[i])
+    df <- rbind(df, x_null)
+  }
+  names(df)[4] <- "Mean"
+  df <- df %>% select(-proteins)
+  ind <- c(grep("dLOP", df$lopit), 
+           grep("hyper", df$lopit), 
+           grep("DC", df$lopit))
+  df <- df[ind, ]
+  df$lopit <- factor(df$lopit, 
+                     levels = c("null_dLOPIT", "dLOPIT", "null_hyperLOPIT",
+                                "hyperLOPIT", "null_LOPIT-DC", "LOPIT-DC"))
+  df$values <- rep(rep(c("observed", "null"), each = 4), 3)
+  df$method <- rep(c("dLOPIT", "hyperLOPIT", "LOPIT-DC"), each = 8)
+  return(df)
+}
+```
+
+Get plotting data
+
+```{r}
+(plot_data <- getResults(res, null_summaries))
+```
+
+Barplot for HPA agreement with every HPA level of evidence defined explicitly
+
+```{r}
+p <- plot_data %>%
+  filter(hpa != "all") %>% 
+    ggplot(aes(x = values, y =100*Mean, fill = method)) +
+    geom_bar(stat='identity') + 
+    # geom_errorbar(aes(ymin = (Mean*100)-sd, ymax = (Mean*100) + sd), 
+                  # width = .25, position = position_dodge(.9), colour='grey40') +
+    facet_grid(hpa~method) +
+    theme_camprot(border = FALSE, base_family = 'sans', base_size = 15) +
+    theme(strip.background = element_blank(), axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
     xlab('') +
     ylab('Agreement with HPA (%)') +
-    ylim(0, 100*(max(all_lopit_vs_hpa_summarised$fraction_TRUE)*1.05)) + 
-    geom_text(aes(y=100*fraction_TRUE/2, label=total), colour='grey20') +
-    geom_text(aes(label=sprintf('%.0f', 100*fraction_TRUE, 0)), vjust=-0.2, colour='grey20')
-}
+    ylim(0, 100*(max(plot_data$Mean)*1.05)) + 
+    geom_text(aes(y = 10, label = n), colour = 'white') +
+    # geom_text(aes(y = 100*Mean/2, label = n), colour = 'grey20') 
+    geom_text(aes(label = sprintf('%1.f', 100*Mean)), vjust = -0.2, colour = 'grey20') +
+    # scale_fill_manual(values = c("#7E5D8CFF", "#47A7A3FF", "#FFEC62FF")) +
+    scale_fill_manual(values = c("#5D5D5D", "#9B9B9B", "#D9D9D9")) +
+    theme(legend.position = "none") 
 
-p <- plot_all_lopit_vs_hpa_summarised(all_lopit_vs_hpa_summarised)
-print(p)
-ggsave('../../../../5_manuscript_figures/Figure_1/hpa/all_conf_levels.png', height=5, width=10)
-ggsave('../../../../5_manuscript_figures/Figure_1/hpa/all_conf_levels.pdf', height=5, width=10)
-
-p <- all_lopit_vs_hpa_summarised %>%
-  filter(confidence_level=='Approved') %>%
-  plot_all_lopit_vs_hpa_summarised() +
-  theme(strip.text=element_blank())
-
-print(p)
-ggsave('../../../../5_manuscript_figures/Figure_1/hpa/Approved.png', height=5, width=5)
-ggsave('../../../../5_manuscript_figures/Figure_1/hpa/Approved.pdf', height=5, width=5)
-
-
-
-p <- plot_all_lopit_vs_hpa_summarised(all_lopit_common_vs_hpa_summarised)
-print(p)
-```
-```{r, fig.height=10, fig.width=8}
-plot_all_lopit_vs_hpa <- function(all_lopit_vs_hpa){
-  all_lopit_vs_hpa %>%
-      filter(confidence_level!='Uncertain') %>%
-      ggplot(aes(LOPIT, 100*fraction_TRUE)) +
-      geom_bar(stat='identity', fill='grey80', colour=NA) +
-      facet_grid(classification~confidence_level) +
-      theme_camprot(border=FALSE, base_family='sans', base_size=12) +
-      theme(strip.background=element_blank(), axis.text.x=element_text(angle=45, vjust=1, hjust=1)) +
-      xlab('') +
-      ylab('Agreement with HPA (%)') +
-      ylim(0, 100*(max(all_lopit_vs_hpa$fraction_TRUE)*1.1)) + 
-      geom_text(aes(y=100*fraction_TRUE/2, label=total), colour='grey20')
-}
-
-plot_all_lopit_vs_hpa(all_lopit_vs_hpa)
-plot_all_lopit_vs_hpa(all_lopit_common_vs_hpa)
+p
+ggsave("../../../../5_manuscript_figures/Figure_1/hpa/barplot_all_levels.png", 
+       height=8, width=8)
+ggsave("../../../../5_manuscript_figures/Figure_1/hpa/barplot_all_levels.pdf",
+       height=8, width=8)
 ```
 
+Barplot for HPA concordance where all evidence levels have been combined
 
+```{r}
+p <- plot_data %>%
+  filter(hpa == "all") %>% 
+    ggplot(aes(x = values, y =100*Mean, fill = method)) +
+    geom_bar(stat='identity') + 
+    # geom_errorbar(aes(ymin = (Mean*100)-(sd*100), ymax = (Mean*100) + (sd*100)), 
+    #            width = .25, position = position_dodge(.9), colour='black') +
+    facet_wrap(~method) +
+    theme_camprot(border = FALSE, base_family = 'sans', base_size = 15) +
+    theme(strip.background = element_blank(), axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+    xlab('') +
+    ylab('Agreement with HPA (%)') +
+    ylim(0, 100*(max(plot_data$Mean)*1.05)) + 
+    geom_text(aes(y = 10, label = n), colour = 'white') +
+    # geom_text(aes(y = 100*Mean/2, label = n), colour = 'grey20') 
+    geom_text(aes(label = sprintf('%1.f', 100*Mean)), vjust = -0.2, colour = 'grey20') +
+    # scale_fill_manual(values = c("#7E5D8CFF", "#47A7A3FF", "#FFEC62FF")) +
+    scale_fill_manual(values = c("#5D5D5D", "#9B9B9B", "#D9D9D9")) +
+    theme(legend.position = "none") 
+
+p
+
+ggsave("../../../../5_manuscript_figures/Figure_1/hpa/barplot_combined.png", 
+       height=4.5, width=8)
+ggsave("../../../../5_manuscript_figures/Figure_1/hpa/barplot_combined.pdf",
+       height=4.5, width=8)
+```
+
+Plot histogram of raw distributions
+
+```{r}
+observed_means <- plot_data %>%
+  filter(hpa == "all", values == "observed") %>% 
+  select(x_mean = Mean, method = method) 
+observed_means$method <- as.factor(observed_means$method) 
+observed_means <- as_tibble(observed_means)
+null_dat$method <- as.factor(null_dat$method)
+null_dat <- as_tibble(null_dat)
+
+q <- 
+  null_dat %>% 
+  filter(hpa == "all") %>%
+  ggplot(aes(null*100)) +
+  geom_histogram(aes(y = after_stat(density)), 
+                   fill="grey", colour="white", bins = 80) +
+  geom_density() +
+  facet_wrap(~method) +
+  theme_camprot(border=FALSE, base_family='sans', base_size=15) +
+  theme(strip.background=element_blank()) + 
+        # strip.text = element_text(hjust=1)) +
+  xlab('Agreement with HPA (%)') +
+  scale_x_continuous(limits = c(10, 90)) +
+  geom_vline(data = observed_means, aes(xintercept = x_mean*100),
+             color="blue", linewidth = .5) +
+  # geom_vline(data=filter(null_dat, method=="dLOPIT"), aes(xintercept=70, colour="pink"))
+  geom_text(data = observed_means,
+            aes(x = x_mean*100 + 4 , y = .3,
+                label = paste0("Observed = ", round(x_mean*100), "%")),
+            colour = "blue", check_overlap = TRUE, size = 4, angle = 90) 
+q
+
+ggsave("../../../../5_manuscript_figures/Figure_1/hpa/density_combined.png", 
+       height=4, width=9)
+ggsave("../../../../5_manuscript_figures/Figure_1/hpa/density_combined.pdf",
+       height=4, width=9)
+```
+
+Plot histogram of raw distributions for every LOPIT and every evidence level
+
+```{r}
+observed_means <- plot_data %>% 
+  filter(hpa != "all", values == "observed") %>% 
+  select(x_mean = Mean, method = method, hpa = hpa) 
+observed_means$method <- as.factor(observed_means$method)
+observed_means<- as_tibble(observed_means)
+null_dat$method <- as.factor(null_dat$method)
+null_dat$hpa <- factor(null_dat$hpa, 
+                       levels = c("all", "Enhanced", "Supported", "Approved"))
+
+q <- 
+  null_dat %>% 
+  filter(hpa != "all") %>%
+  ggplot(aes(null*100)) +
+  geom_histogram(aes(y = after_stat(density)), 
+                   fill="grey60", colour="white", bins = 50) +
+  geom_density(fill = "white", alpha = .6) +
+  facet_grid(hpa~method) +
+  theme_camprot(border=FALSE, base_family='sans', base_size=15) +
+  theme(strip.background=element_blank()) + 
+        # strip.text = element_text(hjust=1)) +
+  xlab('Agreement with HPA (%)') +
+  # scale_x_continuous(breaks=seq(0,100,25), expand = c(0,1)) +
+  # coord_cartesian(xlim = c(, 100)) +
+  geom_vline(data = observed_means, aes(xintercept = x_mean*100, group = hpa),
+             color="blue", linewidth = .5) +
+  # geom_vline(data=filter(null_dat, method=="dLOPIT"), 
+  #            aes(xintercept=70, colour="pink")) +
+  # # 
+  geom_text(data = observed_means,
+            aes(x = x_mean*100 + 4 , y = .2,
+                label = paste0("Observed = ", round(x_mean*100), "%")),
+            colour = "blue", check_overlap = TRUE, size = 4, angle = 90) +
+  # coord_cartesian(xlim = c(10, 105), ylim = c(0, 0.3)) +
+  scale_x_continuous(limits = c(10, 100))
+q                
+
+ggsave("../../../../5_manuscript_figures/Figure_1/hpa/density_all_levels.png", 
+       height=8, width=10)
+ggsave("../../../../5_manuscript_figures/Figure_1/hpa/density_all_levels.pdf",
+       height=8, width=10)
+```
+
+Tabulate results
+
+```{r}
+null_dat %>% group_by(method, hpa) %>% 
+  summarise(mean = mean(null), min = min(null), max = max(null))
+```
+
+
+SI Fig 1 (h) Density plots showing null distributions and the observed values for the
+agreement between LOPIT classifications and Cell Atlas data from the Human
+Protein Atlas (HPA). Agreement means the LOPIT classification is within the Cell
+Atlas annotations. Randomisation tests were performed 1000 times for each HPA
+level and for each LOPIT dataset. In each case the observed values exceeded the
+100th percentile of the null distribution. The observed agreement is marked on
+the density plots in blue.
